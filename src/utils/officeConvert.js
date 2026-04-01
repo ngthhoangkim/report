@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const { getLibreOfficeBinary } = require('./libreOffice');
+const logger = require('./logger');
 
 const execFileAsync = promisify(execFile);
 
@@ -38,6 +39,14 @@ async function convertWithWord(mode, inputPath, outDir) {
   ensureDir(outDir);
 
   const absInput = path.resolve(inputPath);
+  if (!fs.existsSync(absInput)) {
+    throw new Error(`Word conversion input not found: ${absInput}`);
+  }
+  const st = fs.statSync(absInput);
+  if (!st.isFile() || st.size <= 0) {
+    throw new Error(`Word conversion input is empty/invalid: ${absInput} size=${st.size}`);
+  }
+
   const base = path.parse(absInput).name;
   const outPath = path.join(outDir, `${base}.${m}`);
 
@@ -73,11 +82,23 @@ try {
   fs.writeFileSync(ps1, ps, 'utf8');
 
   const psExe = process.env.POWERSHELL_EXE || 'powershell.exe';
-  await execFileAsync(
-    psExe,
-    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1],
-    { maxBuffer: 50 * 1024 * 1024 },
-  );
+  try {
+    await execFileAsync(
+      psExe,
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1],
+      { maxBuffer: 50 * 1024 * 1024 },
+    );
+  } catch (e) {
+    logger.error('Word conversion failed', {
+      mode: m,
+      inputPath: absInput,
+      inputSize: st.size,
+      outDir,
+      expectedOutPath: outPath,
+      errorMessage: e?.message || String(e),
+    });
+    throw e;
+  }
 
   if (!fs.existsSync(outPath)) {
     throw new Error(`Word conversion produced no output: ${outPath}`);

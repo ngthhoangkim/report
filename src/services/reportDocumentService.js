@@ -383,6 +383,26 @@ function insertXmlAfterBodyOpen(docXml, fragment) {
 
 /** Trả về đường dẫn tuyệt đối tới logo hoặc null (thử jpg/jpeg/png). */
 function resolveLogoFileOnDisk(templateBasePath) {
+  const envLogo = process.env.PATHS_LOGO || process.env.LOGO_PATH;
+  if (envLogo && String(envLogo).trim()) {
+    const p0 = String(envLogo).trim();
+    const abs = path.isAbsolute(p0) ? p0 : path.resolve(process.cwd(), p0);
+    try {
+      if (fs.existsSync(abs)) {
+        const st = fs.statSync(abs);
+        if (st.isFile()) return abs;
+        if (st.isDirectory()) {
+          for (const name of LOGO_CANDIDATES) {
+            const p = path.join(abs, name);
+            if (fs.existsSync(p)) return p;
+          }
+        }
+      }
+    } catch (_) {
+      // ignore
+    }
+  }
+
   if (!templateBasePath) return null;
   for (const name of LOGO_CANDIDATES) {
     const p = path.join(templateBasePath, name);
@@ -642,6 +662,24 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
   const stagedTemplate = path.join(tempDir, `tpl_${segmentIndex}_${path.basename(templatePath)}`);
   fs.copyFileSync(templatePath, stagedTemplate);
   validateWordTemplateFile(stagedTemplate);
+
+  try {
+    const st0 = fs.statSync(stagedTemplate);
+    logger.info('Template staged', {
+      imagingResultId: record.imagingResultId,
+      segmentIndex,
+      templatePath,
+      stagedTemplate,
+      size: st0.size,
+    });
+    if (st0.size <= 0) {
+      throw new Error(`Staged template is empty: ${stagedTemplate}`);
+    }
+  } catch (e) {
+    throw new Error(
+      `Template staging failed for ImagingResultId=${record.imagingResultId}: ${e?.message || String(e)}`,
+    );
+  }
 
   await convertWithLibreOffice('docx', stagedTemplate, tempDir);
   const templateDocxPath = path.join(tempDir, `${path.parse(stagedTemplate).name}.docx`);
