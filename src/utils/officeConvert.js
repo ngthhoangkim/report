@@ -117,7 +117,17 @@ async function convertWithOffice(mode, inputPath, outDir) {
     String(process.env.USE_WORD || 'true').toLowerCase().trim() !== 'false';
 
   if (useWord) {
-    return convertWithWord(m, inputPath, outDir);
+    try {
+      return await convertWithWord(m, inputPath, outDir);
+    } catch (e) {
+      logger.warn('Word convert failed; falling back to LibreOffice', {
+        mode: m,
+        inputPath: path.resolve(inputPath),
+        outDir,
+        reason: e?.message || String(e),
+      });
+      return convertWithLibreOffice(m, inputPath, outDir);
+    }
   }
   return convertWithLibreOffice(m, inputPath, outDir);
 }
