@@ -466,6 +466,66 @@ function removeFirstEmptyParagraphAfter(docXml, afterIdx) {
   return docXml.slice(0, start) + docXml.slice(endTag);
 }
 
+function cleanupDocxDocumentXmlWhitespace(docXml) {
+  // Remove empty paragraphs and empty page-break paragraphs to prevent blank pages.
+  const paraRe = /<w:p\b[\s\S]*?<\/w:p>/g;
+  const paras = docXml.match(paraRe);
+  if (!paras || paras.length === 0) return docXml;
+
+  const keep = [];
+  for (const p of paras) {
+    const hasTextOrObject =
+      p.includes('<w:t') ||
+      p.includes('<w:drawing') ||
+      p.includes('<w:object') ||
+      p.includes('<w:pict') ||
+      p.includes('<w:tbl') ||
+      p.includes('<w:hyperlink');
+
+    if (hasTextOrObject) {
+      keep.push(p);
+      continue;
+    }
+
+    // Drop paragraphs that are empty or only contain breaks (including page breaks).
+    const hasBreak = p.includes('<w:br') || p.includes('<w:cr') || p.includes('<w:tab');
+    if (hasBreak) continue;
+    if (isParagraphXmlEmpty(p)) continue;
+    keep.push(p);
+  }
+
+  // Replace only inside body to avoid touching headers/footers references.
+  const bodyOpen = docXml.match(/<w:body\b[^>]*>/);
+  const bodyCloseIdx = docXml.indexOf('</w:body>');
+  if (!bodyOpen || bodyCloseIdx < 0) return docXml;
+
+  const bodyStart = bodyOpen.index + bodyOpen[0].length;
+  const bodyEnd = bodyCloseIdx;
+  const before = docXml.slice(0, bodyStart);
+  const after = docXml.slice(bodyEnd);
+  const newBodyInner = keep.join('');
+  return before + newBodyInner + after;
+}
+
+function cleanupDocxWhitespaceInPlace(docxPath) {
+  try {
+    const zip = new PizZip(fs.readFileSync(docxPath));
+    const docFile = zip.file('word/document.xml');
+    if (!docFile) return false;
+    const oldXml = docFile.asText();
+    const nextXml = cleanupDocxDocumentXmlWhitespace(oldXml);
+    if (nextXml !== oldXml) {
+      zip.file('word/document.xml', nextXml);
+      fs.writeFileSync(docxPath, zip.generate({ type: 'nodebuffer' }));
+      return true;
+    }
+    return false;
+  } catch (e) {
+    logger.warn(`cleanupDocxWhitespace failed: ${e.message}`);
+    return false;
+  }
+}
+
 /**
  * Giống MedicalReportServer ReportService.InsertLogoIfExists: đặt logo.jpg trong thư mục template (PATHS_TEMPLATES).
  */
@@ -719,6 +779,7 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
   if (ctx.templatesDir) {
     insertLogoIntoDocxIfExists(templateDocxPath, ctx.templatesDir);
   }
+  cleanupDocxWhitespaceInPlace(templateDocxPath);
 
   const tmpPrefix = path.join(tempDir, `rtf_${record.imagingResultId}_${segmentIndex}`);
 
@@ -763,6 +824,7 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
   const baseName = `rendered_${record.imagingResultId}_${segmentIndex}`;
   const renderedDocxPath = path.join(tempDir, `${baseName}.docx`);
   fs.writeFileSync(renderedDocxPath, doc.getZip().generate({ type: 'nodebuffer' }));
+  cleanupDocxWhitespaceInPlace(renderedDocxPath);
 
   const tokenToRtf = {};
   if (resultRtf) tokenToRtf.__RTF_RESULT__ = resultRtf;
