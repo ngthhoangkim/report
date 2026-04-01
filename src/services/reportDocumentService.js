@@ -52,7 +52,7 @@ function buildRenderPayload(record, rtfTokens) {
     PatientName: str(record.patientName),
     Age: str(calcAge(record.dob, record.ngayKham)),
     Gender: str(record.gender),
-    Diagnosis: '',
+    Diagnosis: str(record.conclusion),
     ReferDoctor: str(record.requestedDoctor),
     Doctor: str(buildDoctorLabel(record)),
     ItemNum: str(record.itemNum),
@@ -167,6 +167,49 @@ function replaceParagraphContainingToken(docXml, token, replacementInnerXml) {
   }
 
   return docXml;
+}
+
+/**
+ * Một số template fallback (vd. XrayResultTemplate.doc) không có <<Result>>/<<Conclusion>>.
+ * Aspose trên server tạo bookmark cuối document khi không tìm thấy placeholder — ta chèn đoạn chứa
+ * token __RTF_* trước w:sectPr để injectRtfIntoDocx vẫn chạy.
+ */
+function insertXmlBeforeBodySectPr(docXml, innerFragmentsXml) {
+  const sectIdx = docXml.lastIndexOf('<w:sectPr');
+  if (sectIdx >= 0) {
+    return docXml.slice(0, sectIdx) + innerFragmentsXml + docXml.slice(sectIdx);
+  }
+  const bodyEnd = docXml.lastIndexOf('</w:body>');
+  if (bodyEnd < 0) return docXml;
+  return docXml.slice(0, bodyEnd) + innerFragmentsXml + docXml.slice(bodyEnd);
+}
+
+function ensureRtfPlaceholderParagraphsInDocx(renderedDocxPath, tokenToRtf) {
+  if (!tokenToRtf || !Object.keys(tokenToRtf).length) return;
+
+  const zip = new PizZip(fs.readFileSync(renderedDocxPath));
+  const docFile = zip.file('word/document.xml');
+  if (!docFile) return;
+
+  let docXml = docFile.asText();
+  const fragments = [];
+
+  for (const [token, rtfText] of Object.entries(tokenToRtf)) {
+    if (!rtfText || !String(rtfText).trim()) continue;
+    if (docContainsTokenInParagraphs(docXml, token)) continue;
+    fragments.push(
+      `<w:p><w:r><w:t xml:space="preserve">${token}</w:t></w:r></w:p>`,
+    );
+    logger.warn(
+      `Template missing RTF token ${token} — inserting paragraph before sectPr (fallback, same idea as Aspose EnsureBookmarkExists).`,
+    );
+  }
+
+  if (!fragments.length) return;
+
+  docXml = insertXmlBeforeBodySectPr(docXml, fragments.join(''));
+  zip.file('word/document.xml', docXml);
+  fs.writeFileSync(renderedDocxPath, zip.generate({ type: 'nodebuffer' }));
 }
 
 async function injectRtfIntoDocx(renderedDocxPath, tokenToRtf, tempDirForRtf) {
@@ -530,13 +573,17 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
   const renderedDocxPath = path.join(tempDir, `${baseName}.docx`);
   fs.writeFileSync(renderedDocxPath, doc.getZip().generate({ type: 'nodebuffer' }));
 
+  const tokenToRtf = {};
+  if (resultRtf) tokenToRtf.__RTF_RESULT__ = resultRtf;
+  if (conclusionRtf) tokenToRtf.__RTF_CONCLUSION__ = conclusionRtf;
+  if (suggestionRtf) tokenToRtf.__RTF_SUGGESTION__ = suggestionRtf;
+  if (Object.keys(tokenToRtf).length) {
+    ensureRtfPlaceholderParagraphsInDocx(renderedDocxPath, tokenToRtf);
+  }
+
   const basePdfPath = path.join(tempDir, `${baseName}.pdf`);
 
   try {
-    const tokenToRtf = {};
-    if (resultRtf) tokenToRtf.__RTF_RESULT__ = resultRtf;
-    if (conclusionRtf) tokenToRtf.__RTF_CONCLUSION__ = conclusionRtf;
-    if (suggestionRtf) tokenToRtf.__RTF_SUGGESTION__ = suggestionRtf;
     if (Object.keys(tokenToRtf).length) {
       await injectRtfIntoDocx(
         renderedDocxPath,
