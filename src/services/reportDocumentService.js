@@ -361,6 +361,95 @@ function buildInlineImageParagraphXml(rid, cx, cy) {
   );
 }
 
+const LOGO_FILE_NAME = 'logo.jpg';
+
+/** Chèn fragment ngay sau mở body (sau </w:bodyPr> nếu có). */
+function insertXmlAfterBodyOpen(docXml, fragment) {
+  const closeBodyPr = '</w:bodyPr>';
+  const i = docXml.indexOf(closeBodyPr);
+  if (i >= 0) {
+    const pos = i + closeBodyPr.length;
+    return docXml.slice(0, pos) + fragment + docXml.slice(pos);
+  }
+  const bodyTag = '<w:body>';
+  const j = docXml.indexOf(bodyTag);
+  if (j < 0) return docXml;
+  return docXml.slice(0, j + bodyTag.length) + fragment + docXml.slice(j + bodyTag.length);
+}
+
+function buildLogoParagraphXml(rid, cx, cy) {
+  const docPrId = Math.floor(Math.random() * 100000) + 1;
+  return (
+    `<w:p>` +
+    `<w:pPr><w:jc w:val="center"/><w:spacing w:after="240"/></w:pPr>` +
+    `<w:r>` +
+    `<w:drawing>` +
+    `<wp:inline distT="0" distB="0" distL="0" distR="0">` +
+    `<wp:extent cx="${cx}" cy="${cy}"/>` +
+    `<wp:docPr id="${docPrId}" name="Logo${docPrId}"/>` +
+    `<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">` +
+    `<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">` +
+    `<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">` +
+    `<pic:nvPicPr><pic:cNvPr id="0" name="logo"/><pic:cNvPicPr/></pic:nvPicPr>` +
+    `<pic:blipFill>` +
+    `<a:blip r:embed="${rid}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>` +
+    `<a:stretch><a:fillRect/></a:stretch>` +
+    `</pic:blipFill>` +
+    `<pic:spPr>` +
+    `<a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm>` +
+    `<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>` +
+    `</pic:spPr>` +
+    `</pic:pic>` +
+    `</a:graphicData>` +
+    `</a:graphic>` +
+    `</wp:inline>` +
+    `</w:drawing>` +
+    `</w:r>` +
+    `</w:p>`
+  );
+}
+
+/**
+ * Giống MedicalReportServer ReportService.InsertLogoIfExists: đặt logo.jpg trong thư mục template (PATHS_TEMPLATES).
+ */
+function insertLogoIntoDocxIfExists(docxPath, templateBasePath) {
+  if (!docxPath || !templateBasePath) return false;
+  const logoPath = path.join(templateBasePath, LOGO_FILE_NAME);
+  if (!fs.existsSync(logoPath)) {
+    return false;
+  }
+  try {
+    const zip = new PizZip(fs.readFileSync(docxPath));
+    const docFile = zip.file('word/document.xml');
+    const relsFile = zip.file('word/_rels/document.xml.rels');
+    if (!docFile || !relsFile) {
+      logger.warn('insertLogo: missing word/document.xml or word/_rels/document.xml.rels');
+      return false;
+    }
+    let docXml = docFile.asText();
+    let relsXml = relsFile.asText();
+    const mediaName = `logo_${crypto.randomBytes(4).toString('hex')}.jpg`;
+    const mediaTarget = `media/${mediaName}`;
+    const rid = nextRelIdFromRels(relsXml);
+    relsXml = addImageRelationship(relsXml, rid, mediaTarget);
+    zip.file(`word/${mediaTarget}`, fs.readFileSync(logoPath));
+    const size = readImageSize(logoPath) || { width: 800, height: 200 };
+    const fitted = fitSizeToBox(size.width, size.height, 560, 180);
+    const EMU_PER_PX = 9525;
+    const cx = fitted.w * EMU_PER_PX;
+    const cy = fitted.h * EMU_PER_PX;
+    docXml = insertXmlAfterBodyOpen(docXml, buildLogoParagraphXml(rid, cx, cy));
+    zip.file('word/document.xml', docXml);
+    zip.file('word/_rels/document.xml.rels', relsXml);
+    fs.writeFileSync(docxPath, zip.generate({ type: 'nodebuffer' }));
+    logger.info(`Inserted logo from ${LOGO_FILE_NAME} into ${path.basename(docxPath)}`);
+    return true;
+  } catch (e) {
+    logger.warn(`Failed to insert logo: ${e.message}`);
+    return false;
+  }
+}
+
 async function embedImagesIntoDocx(renderedDocxPath, tokenToImagePath) {
   const zip = new PizZip(fs.readFileSync(renderedDocxPath));
   const docXmlFile = zip.file('word/document.xml');
@@ -540,6 +629,10 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
   const templateDocxPath = path.join(tempDir, `${path.parse(stagedTemplate).name}.docx`);
   if (!fs.existsSync(templateDocxPath)) {
     throw new Error(`LibreOffice could not convert template to DOCX: ${stagedTemplate}`);
+  }
+
+  if (ctx.templatesDir) {
+    insertLogoIntoDocxIfExists(templateDocxPath, ctx.templatesDir);
   }
 
   const tmpPrefix = path.join(tempDir, `rtf_${record.imagingResultId}_${segmentIndex}`);

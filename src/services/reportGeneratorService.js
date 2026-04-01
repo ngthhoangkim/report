@@ -86,6 +86,7 @@ async function generatePdfByFileNumAndSessionId(fileNum, sessionId, options = {}
     const ctx = {
       fileCopyHelper,
       templateSelector,
+      templatesDir: paths.templates,
     };
 
     const segmentBuffers = [];
