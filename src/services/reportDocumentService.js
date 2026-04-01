@@ -70,14 +70,12 @@ function buildRenderPayload(record, rtfTokens) {
   for (let i = 1; i <= IMAGE_KEYS_MAX; i += 1) {
     payload[`Image${i}`] = '';
   }
-  // Optional: allow caller to keep an image placeholder token for later XML-based injection.
   if (rtfTokens && rtfTokens.imageTokens) {
     for (const [k, v] of Object.entries(rtfTokens.imageTokens)) {
       payload[k] = str(v);
     }
   }
 
-  // Trả '' cho các key không tồn tại để docxtemplater không in "undefined"
   return new Proxy(payload, {
     get(target, prop) {
       if (typeof prop === 'string' && !(prop in target)) return '';
@@ -87,8 +85,6 @@ function buildRenderPayload(record, rtfTokens) {
 }
 
 async function convertWithLibreOffice(mode, inputPath, outDir) {
-  // Backward-compat wrapper name used throughout this module.
-  // On Windows: may use Word (USE_WORD=true). On macOS/Linux: uses soffice.
   await convertWithOffice(mode, inputPath, outDir);
 }
 
@@ -107,20 +103,70 @@ function extractWordDocumentXmlInnerBody(docXml) {
   return inner;
 }
 
+const OOXML_PARA_REGEX = /<w:p\b[\s\S]*?<\/w:p>/g;
+
+function decodeXmlEntities(s) {
+  if (!s) return '';
+  return String(s)
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
+/** Ghép mọi <w:t> trong một <w:p> — Word hay tách placeholder thành nhiều run. */
+function paragraphPlainText(paraXml) {
+  let text = '';
+  const re = /<w:t[^>]*>([\s\S]*?)<\/w:t>/g;
+  let m;
+  while ((m = re.exec(paraXml)) !== null) {
+    text += decodeXmlEntities(m[1]);
+  }
+  return text;
+}
+
+function docContainsTokenInParagraphs(docXml, token) {
+  if (!token) return false;
+  if (docXml.includes(token)) return true;
+  OOXML_PARA_REGEX.lastIndex = 0;
+  let m;
+  while ((m = OOXML_PARA_REGEX.exec(docXml)) !== null) {
+    if (paragraphPlainText(m[0]).includes(token)) return true;
+  }
+  return false;
+}
+
 function replaceParagraphContainingToken(docXml, token, replacementInnerXml) {
-  const idx = docXml.indexOf(token);
-  if (idx < 0) return docXml;
+  if (!token) return docXml;
 
-  // Replace the whole paragraph containing the token to avoid invalid nesting.
-  // Important: don't match <w:pPr ...> (it also starts with "<w:p").
-  const before = docXml.slice(0, idx);
-  const matches = [...before.matchAll(/<w:p(\s|>)/g)];
-  const pStart = matches.length ? matches[matches.length - 1].index : -1;
-  const pEnd = docXml.indexOf('</w:p>', idx);
-  if (pStart < 0 || pEnd < 0) return docXml;
+  // Nhanh: token còn nguyên trong XML
+  if (docXml.includes(token)) {
+    const idx = docXml.indexOf(token);
+    const before = docXml.slice(0, idx);
+    const matches = [...before.matchAll(/<w:p(\s|>)/g)];
+    const pStart = matches.length ? matches[matches.length - 1].index : -1;
+    const pEnd = docXml.indexOf('</w:p>', idx);
+    if (pStart < 0 || pEnd < 0) return docXml;
+    const pEndWithTag = pEnd + '</w:p>'.length;
+    return docXml.slice(0, pStart) + replacementInnerXml + docXml.slice(pEndWithTag);
+  }
 
-  const pEndWithTag = pEnd + '</w:p>'.length;
-  return docXml.slice(0, pStart) + replacementInnerXml + docXml.slice(pEndWithTag);
+  // Token bị tách giữa nhiều <w:t> trong cùng một đoạn
+  OOXML_PARA_REGEX.lastIndex = 0;
+  let match;
+  while ((match = OOXML_PARA_REGEX.exec(docXml)) !== null) {
+    const full = match[0];
+    if (paragraphPlainText(full).includes(token)) {
+      return (
+        docXml.slice(0, match.index) +
+        replacementInnerXml +
+        docXml.slice(match.index + full.length)
+      );
+    }
+  }
+
+  return docXml;
 }
 
 async function injectRtfIntoDocx(renderedDocxPath, tokenToRtf, tempDirForRtf) {
@@ -137,7 +183,7 @@ async function injectRtfIntoDocx(renderedDocxPath, tokenToRtf, tempDirForRtf) {
 
   for (const [token, rtfText] of Object.entries(tokenToRtf)) {
     if (!rtfText) continue;
-    if (!mainDocXml.includes(token)) continue;
+    if (!docContainsTokenInParagraphs(mainDocXml, token)) continue;
 
     const rtfPath = path.join(tempDirForRtf, `${token}.rtf`);
     fs.writeFileSync(rtfPath, rtfText, 'utf8');
@@ -276,15 +322,16 @@ async function embedImagesIntoDocx(renderedDocxPath, tokenToImagePath) {
   const zip = new PizZip(fs.readFileSync(renderedDocxPath));
   const docXmlFile = zip.file('word/document.xml');
   const relsFile = zip.file('word/_rels/document.xml.rels');
-  if (!docXmlFile || !relsFile) return { embedded: 0 };
+  if (!docXmlFile || !relsFile) return { embedded: 0, embeddedPaths: [] };
 
   let docXml = docXmlFile.asText();
   let relsXml = relsFile.asText();
   let embedded = 0;
+  const embeddedPaths = [];
 
   for (const [token, imagePath] of Object.entries(tokenToImagePath || {})) {
     if (!imagePath || !fs.existsSync(imagePath)) continue;
-    if (!docXml.includes(token)) continue;
+    if (!docContainsTokenInParagraphs(docXml, token)) continue;
 
     const ext = path.extname(imagePath).toLowerCase() || '.jpg';
     const mediaName = `img_${crypto.randomBytes(6).toString('hex')}${ext}`;
@@ -304,12 +351,13 @@ async function embedImagesIntoDocx(renderedDocxPath, tokenToImagePath) {
     const paraXml = buildInlineImageParagraphXml(rid, cx, cy);
     docXml = replaceParagraphContainingToken(docXml, token, paraXml);
     embedded += 1;
+    embeddedPaths.push(path.resolve(imagePath));
   }
 
   zip.file('word/document.xml', docXml);
   zip.file('word/_rels/document.xml.rels', relsXml);
   fs.writeFileSync(renderedDocxPath, zip.generate({ type: 'nodebuffer' }));
-  return { embedded };
+  return { embedded, embeddedPaths };
 }
 
 /**
@@ -405,11 +453,15 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
     `Resolved ${imageFiles.length}/${printedNames.length} image(s) for ImagingResultId=${record.imagingResultId}`,
   );
 
-  const templatePath = templateSelector.selectTemplate(record.templateFile);
+  const templatePath = templateSelector.selectTemplate(
+    record.templateFile,
+    record.pathologyType,
+    imageFiles.length,
+  );
 
   if (!templatePath) {
     logger.warn(
-      `Skip ImagingResultId=${record.imagingResultId}: template missing or empty TemplateFile`,
+      `Skip ImagingResultId=${record.imagingResultId}: no template (TemplateFile=${record.templateFile || ''}, PathologyType=${record.pathologyType})`,
     );
     return null;
   }
@@ -467,7 +519,6 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
     delimiters: { start: '<<', end: '>>' },
     linebreaks: true,
     paragraphLoop: true,
-    /** Thẻ trong .docx mà không có trong payload → chuỗi rỗng, không in "undefined". */
     nullGetter() {
       return '';
     },
@@ -481,7 +532,6 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
 
   const basePdfPath = path.join(tempDir, `${baseName}.pdf`);
 
-  // Replace RTF tokens with converted RTF content (paragraph-level) to preserve formatting.
   try {
     const tokenToRtf = {};
     if (resultRtf) tokenToRtf.__RTF_RESULT__ = resultRtf;
@@ -529,26 +579,42 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
   }
 
   const finalPdfPath = path.join(tempDir, `${baseName}_final.pdf`);
-  // Prefer embedding into template placeholders (Image1/Image2). If embedding fails, fallback to append pages.
   let embeddedCount = 0;
+  let embeddedPaths = [];
   try {
     const emb = await embedImagesIntoDocx(renderedDocxPath, tokenToImagePath);
     embeddedCount = emb.embedded || 0;
+    embeddedPaths = emb.embeddedPaths || [];
   } catch (e) {
     logger.warn(`Embed images into docx failed, will append pages: ${e.message}`);
   }
 
+  const embeddedSet = new Set(embeddedPaths.map((p) => path.resolve(p)));
+  const remainingImages = imageFiles.filter((p) => !embeddedSet.has(path.resolve(p)));
+
+  let pdfBaseForAppend = basePdfPath;
   if (embeddedCount > 0) {
-    // Re-convert docx (now with embedded images) to pdf, then no need to append image pages.
-    await convertWithLibreOffice('pdf', renderedDocxPath, tempDir);
-    if (fs.existsSync(basePdfPath)) {
-      fs.copyFileSync(basePdfPath, finalPdfPath);
-    } else {
+    try {
+      await convertWithLibreOffice('pdf', renderedDocxPath, tempDir);
+      if (!fs.existsSync(basePdfPath)) {
+        throw new Error(`LibreOffice produced no PDF: ${basePdfPath}`);
+      }
+      pdfBaseForAppend = basePdfPath;
+    } catch (e) {
+      logger.warn(
+        `Re-convert after embedding failed for ImagingResultId=${record.imagingResultId} (segment=${segmentIndex}). Fallback to appending all image pages. reason=${e?.message || String(e)}`,
+      );
       await mergeBasePdfWithImagePages(basePdfPath, imageFiles, finalPdfPath);
+      return fs.readFileSync(finalPdfPath);
     }
-  } else {
-    await mergeBasePdfWithImagePages(basePdfPath, imageFiles, finalPdfPath);
   }
+
+  if (remainingImages.length > 0) {
+    logger.info(
+      `Appending ${remainingImages.length} image page(s) after text PDF (embedded in template=${embeddedCount}, total resolved=${imageFiles.length}) for ImagingResultId=${record.imagingResultId}`,
+    );
+  }
+  await mergeBasePdfWithImagePages(pdfBaseForAppend, remainingImages, finalPdfPath);
 
   return fs.readFileSync(finalPdfPath);
 }
