@@ -496,6 +496,23 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
     `Resolved ${imageFiles.length}/${printedNames.length} image(s) for ImagingResultId=${record.imagingResultId}`,
   );
 
+  const resultRtf = decompressToString(record.resultData);
+  const conclusionRtf = decompressToString(record.conclusionData);
+  const suggestionRtf = decompressToString(record.suggestionData);
+
+  const hasBlobText =
+    (resultRtf && String(resultRtf).trim()) ||
+    (conclusionRtf && String(conclusionRtf).trim()) ||
+    (suggestionRtf && String(suggestionRtf).trim());
+  const hasPlainConclusion = record.conclusion && String(record.conclusion).trim();
+
+  if (!hasBlobText && !hasPlainConclusion && imageFiles.length === 0) {
+    logger.warn(
+      `Skip ImagingResultId=${record.imagingResultId}: no Result/Conclusion/Suggestion data, no Conclusion column, no images — skip PDF (SKIP_EMPTY_CONTENT)`,
+    );
+    return null;
+  }
+
   const templatePath = templateSelector.selectTemplate(
     record.templateFile,
     record.pathologyType,
@@ -524,10 +541,6 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
   if (!fs.existsSync(templateDocxPath)) {
     throw new Error(`LibreOffice could not convert template to DOCX: ${stagedTemplate}`);
   }
-
-  const resultRtf = decompressToString(record.resultData);
-  const conclusionRtf = decompressToString(record.conclusionData);
-  const suggestionRtf = decompressToString(record.suggestionData);
 
   const tmpPrefix = path.join(tempDir, `rtf_${record.imagingResultId}_${segmentIndex}`);
 
