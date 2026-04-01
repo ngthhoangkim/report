@@ -95,7 +95,6 @@ function extractWordDocumentXmlInnerBody(docXml) {
 
   let inner = docXml.slice(bodyStart + '<w:body>'.length, bodyEnd);
 
-  // Remove trailing section properties if present; inserting those mid-document can break structure.
   const sectStart = inner.lastIndexOf('<w:sectPr');
   if (sectStart >= 0) {
     inner = inner.slice(0, sectStart);
@@ -415,7 +414,7 @@ function buildLogoParagraphXml(rid, cx, cy) {
   const docPrId = Math.floor(Math.random() * 100000) + 1;
   return (
     `<w:p>` +
-    `<w:pPr><w:jc w:val="center"/><w:spacing w:after="240"/></w:pPr>` +
+    `<w:pPr><w:jc w:val="center"/><w:spacing w:before="0" w:after="0"/></w:pPr>` +
     `<w:r>` +
     `<w:drawing>` +
     `<wp:inline distT="0" distB="0" distL="0" distR="0">` +
@@ -441,6 +440,30 @@ function buildLogoParagraphXml(rid, cx, cy) {
     `</w:r>` +
     `</w:p>`
   );
+}
+
+function isParagraphXmlEmpty(pXml) {
+  if (!pXml) return false;
+  // Consider empty if it has no text, no drawing, no table, no embedded objects.
+  return (
+    !pXml.includes('<w:t') &&
+    !pXml.includes('<w:drawing') &&
+    !pXml.includes('<w:object') &&
+    !pXml.includes('<w:pict') &&
+    !pXml.includes('<w:tbl') &&
+    !pXml.includes('<w:hyperlink')
+  );
+}
+
+function removeFirstEmptyParagraphAfter(docXml, afterIdx) {
+  const start = docXml.indexOf('<w:p', afterIdx);
+  if (start < 0) return docXml;
+  const end = docXml.indexOf('</w:p>', start);
+  if (end < 0) return docXml;
+  const endTag = end + '</w:p>'.length;
+  const pXml = docXml.slice(start, endTag);
+  if (!isParagraphXmlEmpty(pXml)) return docXml;
+  return docXml.slice(0, start) + docXml.slice(endTag);
 }
 
 /**
@@ -476,7 +499,13 @@ function insertLogoIntoDocxIfExists(docxPath, templateBasePath) {
     const EMU_PER_PX = 9525;
     const cx = fitted.w * EMU_PER_PX;
     const cy = fitted.h * EMU_PER_PX;
-    docXml = insertXmlAfterBodyOpen(docXml, buildLogoParagraphXml(rid, cx, cy));
+    const logoPara = buildLogoParagraphXml(rid, cx, cy);
+    docXml = insertXmlAfterBodyOpen(docXml, logoPara);
+    // Some templates start with an empty paragraph; remove the first empty paragraph after inserted logo.
+    const logoPos = docXml.indexOf(logoPara);
+    if (logoPos >= 0) {
+      docXml = removeFirstEmptyParagraphAfter(docXml, logoPos + logoPara.length);
+    }
     zip.file('word/document.xml', docXml);
     zip.file('word/_rels/document.xml.rels', relsXml);
     fs.writeFileSync(docxPath, zip.generate({ type: 'nodebuffer' }));

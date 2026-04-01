@@ -23,6 +23,12 @@ function normalizeMode(mode) {
   return m;
 }
 
+function shortErr(e, max = 220) {
+  const s = (e?.message || String(e || '')).replace(/\s+/g, ' ').trim();
+  if (s.length <= max) return s;
+  return `${s.slice(0, max - 3)}...`;
+}
+
 async function convertWithLibreOffice(mode, inputPath, outDir) {
   const bin = getLibreOfficeBinary();
   const args = ['--headless', '--convert-to', mode, '--outdir', outDir, inputPath];
@@ -89,14 +95,6 @@ try {
       { maxBuffer: 50 * 1024 * 1024 },
     );
   } catch (e) {
-    logger.error('Word conversion failed', {
-      mode: m,
-      inputPath: absInput,
-      inputSize: st.size,
-      outDir,
-      expectedOutPath: outPath,
-      errorMessage: e?.message || String(e),
-    });
     throw e;
   }
 
@@ -120,13 +118,22 @@ async function convertWithOffice(mode, inputPath, outDir) {
     try {
       return await convertWithWord(m, inputPath, outDir);
     } catch (e) {
-      logger.warn('Word convert failed; falling back to LibreOffice', {
+      logger.warn('Word convert failed; fallback to LibreOffice', {
         mode: m,
-        inputPath: path.resolve(inputPath),
-        outDir,
-        reason: e?.message || String(e),
+        input: path.basename(String(inputPath || '')),
+        reason: shortErr(e),
       });
-      return convertWithLibreOffice(m, inputPath, outDir);
+      try {
+        return await convertWithLibreOffice(m, inputPath, outDir);
+      } catch (e2) {
+        logger.error('LibreOffice fallback also failed', {
+          mode: m,
+          input: path.basename(String(inputPath || '')),
+          wordReason: shortErr(e),
+          loReason: shortErr(e2),
+        });
+        throw e2;
+      }
     }
   }
   return convertWithLibreOffice(m, inputPath, outDir);
