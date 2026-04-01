@@ -361,7 +361,7 @@ function buildInlineImageParagraphXml(rid, cx, cy) {
   );
 }
 
-const LOGO_FILE_NAME = 'logo.jpg';
+const LOGO_CANDIDATES = ['logo.jpg', 'logo.jpeg', 'logo.png'];
 
 /** Chèn fragment ngay sau mở body (sau </w:bodyPr> nếu có). */
 function insertXmlAfterBodyOpen(docXml, fragment) {
@@ -371,10 +371,24 @@ function insertXmlAfterBodyOpen(docXml, fragment) {
     const pos = i + closeBodyPr.length;
     return docXml.slice(0, pos) + fragment + docXml.slice(pos);
   }
-  const bodyTag = '<w:body>';
-  const j = docXml.indexOf(bodyTag);
-  if (j < 0) return docXml;
-  return docXml.slice(0, j + bodyTag.length) + fragment + docXml.slice(j + bodyTag.length);
+  // LibreOffice/Word thường dùng <w:body w:rsidR="..."> — không khớp chuỗi '<w:body>' cố định
+  const m = docXml.match(/<w:body\b[^>]*>/);
+  if (!m) {
+    logger.warn('insertLogo: no <w:body> tag found in document.xml — logo not inserted');
+    return docXml;
+  }
+  const pos = m.index + m[0].length;
+  return docXml.slice(0, pos) + fragment + docXml.slice(pos);
+}
+
+/** Trả về đường dẫn tuyệt đối tới logo hoặc null (thử jpg/jpeg/png). */
+function resolveLogoFileOnDisk(templateBasePath) {
+  if (!templateBasePath) return null;
+  for (const name of LOGO_CANDIDATES) {
+    const p = path.join(templateBasePath, name);
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
 }
 
 function buildLogoParagraphXml(rid, cx, cy) {
@@ -414,8 +428,11 @@ function buildLogoParagraphXml(rid, cx, cy) {
  */
 function insertLogoIntoDocxIfExists(docxPath, templateBasePath) {
   if (!docxPath || !templateBasePath) return false;
-  const logoPath = path.join(templateBasePath, LOGO_FILE_NAME);
-  if (!fs.existsSync(logoPath)) {
+  const logoPath = resolveLogoFileOnDisk(templateBasePath);
+  if (!logoPath) {
+    logger.info(
+      `No logo file (tried ${LOGO_CANDIDATES.join(', ')}) in ${path.resolve(templateBasePath)} — skip`,
+    );
     return false;
   }
   try {
@@ -428,7 +445,8 @@ function insertLogoIntoDocxIfExists(docxPath, templateBasePath) {
     }
     let docXml = docFile.asText();
     let relsXml = relsFile.asText();
-    const mediaName = `logo_${crypto.randomBytes(4).toString('hex')}.jpg`;
+    const logoExt = path.extname(logoPath).toLowerCase() || '.jpg';
+    const mediaName = `logo_${crypto.randomBytes(4).toString('hex')}${logoExt}`;
     const mediaTarget = `media/${mediaName}`;
     const rid = nextRelIdFromRels(relsXml);
     relsXml = addImageRelationship(relsXml, rid, mediaTarget);
@@ -442,7 +460,7 @@ function insertLogoIntoDocxIfExists(docxPath, templateBasePath) {
     zip.file('word/document.xml', docXml);
     zip.file('word/_rels/document.xml.rels', relsXml);
     fs.writeFileSync(docxPath, zip.generate({ type: 'nodebuffer' }));
-    logger.info(`Inserted logo from ${LOGO_FILE_NAME} into ${path.basename(docxPath)}`);
+    logger.info(`Inserted logo from ${path.basename(logoPath)} into ${path.basename(docxPath)}`);
     return true;
   } catch (e) {
     logger.warn(`Failed to insert logo: ${e.message}`);

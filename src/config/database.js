@@ -12,6 +12,8 @@ function buildSqlConfig() {
   const isWindows = os.platform() === 'win32';
   const fallbackServer = '172.16.2.240';
   const fallbackDatabase = 'Hospital_NM';
+  const connectTimeout = parseInt(process.env.DB_CONNECT_TIMEOUT_MS, 10) || 15000;
+  const requestTimeout = parseInt(process.env.DB_REQUEST_TIMEOUT_MS, 10) || 120000;
 
   const authMode = String(process.env.DB_AUTH_MODE || '').toLowerCase();
   const envHasSqlLogin = Boolean(process.env.DB_USER && process.env.DB_PASSWORD);
@@ -49,8 +51,8 @@ function buildSqlConfig() {
         trustedConnection: true,
         encrypt,
         trustServerCertificate,
-        connectTimeout: 15000,
-        requestTimeout: 30000,
+        connectTimeout,
+        requestTimeout,
       },
     };
   }
@@ -69,8 +71,8 @@ function buildSqlConfig() {
     options: {
       encrypt: parseBool(process.env.DB_ENCRYPT, false),
       trustServerCertificate: parseBool(process.env.DB_TRUST_SERVER_CERTIFICATE, true),
-      connectTimeout: 15000,
-      requestTimeout: 30000,
+      connectTimeout,
+      requestTimeout,
     },
     port: parseInt(process.env.DB_PORT, 10) || 1433,
   };
