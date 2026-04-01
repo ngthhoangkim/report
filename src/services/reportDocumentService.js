@@ -447,6 +447,9 @@ function isParagraphXmlEmpty(pXml) {
   // Consider empty if it has no text, no drawing, no table, no embedded objects.
   return (
     !pXml.includes('<w:t') &&
+    !pXml.includes('<w:br') &&
+    !pXml.includes('w:type="page"') &&
+    !pXml.includes('<w:lastRenderedPageBreak') &&
     !pXml.includes('<w:drawing') &&
     !pXml.includes('<w:object') &&
     !pXml.includes('<w:pict') &&
@@ -455,15 +458,23 @@ function isParagraphXmlEmpty(pXml) {
   );
 }
 
-function removeFirstEmptyParagraphAfter(docXml, afterIdx) {
-  const start = docXml.indexOf('<w:p', afterIdx);
-  if (start < 0) return docXml;
-  const end = docXml.indexOf('</w:p>', start);
-  if (end < 0) return docXml;
-  const endTag = end + '</w:p>'.length;
-  const pXml = docXml.slice(start, endTag);
-  if (!isParagraphXmlEmpty(pXml)) return docXml;
-  return docXml.slice(0, start) + docXml.slice(endTag);
+function removeEmptyParagraphsAfter(docXml, afterIdx, maxRemove = 5) {
+  let xml = docXml;
+  let idx = afterIdx;
+  let removed = 0;
+  while (removed < maxRemove) {
+    const start = xml.indexOf('<w:p', idx);
+    if (start < 0) break;
+    const end = xml.indexOf('</w:p>', start);
+    if (end < 0) break;
+    const endTag = end + '</w:p>'.length;
+    const pXml = xml.slice(start, endTag);
+    if (!isParagraphXmlEmpty(pXml)) break;
+    xml = xml.slice(0, start) + xml.slice(endTag);
+    idx = start; // continue from where we removed
+    removed += 1;
+  }
+  return xml;
 }
 
 /**
@@ -504,7 +515,7 @@ function insertLogoIntoDocxIfExists(docxPath, templateBasePath) {
     // Some templates start with an empty paragraph; remove the first empty paragraph after inserted logo.
     const logoPos = docXml.indexOf(logoPara);
     if (logoPos >= 0) {
-      docXml = removeFirstEmptyParagraphAfter(docXml, logoPos + logoPara.length);
+      docXml = removeEmptyParagraphsAfter(docXml, logoPos + logoPara.length, 5);
     }
     zip.file('word/document.xml', docXml);
     zip.file('word/_rels/document.xml.rels', relsXml);

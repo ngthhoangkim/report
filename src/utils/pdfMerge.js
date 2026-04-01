@@ -1,5 +1,39 @@
 const fs = require('fs');
 const { PDFDocument } = require('pdf-lib');
+const logger = require('./logger');
+
+function tryGetStreamSize(doc, obj) {
+  if (!obj || !doc) return 0;
+  try {
+    const looked = doc.context.lookup(obj);
+    // PDFArray-like
+    if (looked && typeof looked.size === 'function' && typeof looked.get === 'function') {
+      let sum = 0;
+      for (let i = 0; i < looked.size(); i += 1) {
+        sum += tryGetStreamSize(doc, looked.get(i));
+      }
+      return sum;
+    }
+    // PDFStream-like (duck typing)
+    if (looked && looked.contents && typeof looked.contents.length === 'number') {
+      return looked.contents.length;
+    }
+  } catch (_) {
+    // ignore
+  }
+  return 0;
+}
+
+function pageLooksBlank(doc, page, minBytes = 20) {
+  try {
+    const contents = page?.node?.Contents?.();
+    if (!contents) return true;
+    const bytes = tryGetStreamSize(doc, contents);
+    return bytes < minBytes;
+  } catch (_) {
+    return false;
+  }
+}
 
 /**
  * Append one page per image (full page, centered) after base PDF — same role as xray merge in test script.
@@ -46,10 +80,23 @@ async function mergeBasePdfWithImagePages(basePdfPath, imagePaths, outputPdfPath
  */
 async function mergePdfBuffers(pdfBuffers) {
   const outDoc = await PDFDocument.create();
+  let removedBlankPages = 0;
   for (const buf of pdfBuffers) {
     const src = await PDFDocument.load(buf);
-    const pages = await outDoc.copyPages(src, src.getPageIndices());
+    const keepIdx = [];
+    for (let i = 0; i < src.getPageCount(); i += 1) {
+      const p = src.getPage(i);
+      if (pageLooksBlank(src, p)) {
+        removedBlankPages += 1;
+        continue;
+      }
+      keepIdx.push(i);
+    }
+    const pages = await outDoc.copyPages(src, keepIdx);
     pages.forEach((p) => outDoc.addPage(p));
+  }
+  if (removedBlankPages > 0) {
+    logger.info(`Removed ${removedBlankPages} blank PDF page(s) during merge`);
   }
   return Buffer.from(await outDoc.save());
 }
