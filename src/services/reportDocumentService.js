@@ -1,8 +1,6 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { execFile } = require('child_process');
-const { promisify } = require('util');
 const PizZip = require('pizzip');
 const Docxtemplater = require('docxtemplater');
 const logger = require('../utils/logger');
@@ -14,8 +12,6 @@ const { mergeBasePdfWithImagePages } = require('../utils/pdfMerge');
 const { validateWordTemplateFile } = require('../utils/wordFileValidate');
 const { calcAge } = require('../utils/age');
 const { getPrintedImageFilenames } = require('../repositories/reportRepository');
-
-const execFileAsync = promisify(execFile);
 
 function formatDateVN(dateInput) {
   if (!dateInput) return '';
@@ -323,7 +319,7 @@ function setParagraphJcSafe(paraXml, jcVal) {
 
 function applyClinicalClosingAlignmentToDocXml(docXml) {
   const off =
-    String(process.env.REPORT_ALIGN_CLOSING_BLOCK || 'true').toLowerCase() ===
+    String(process.env.REPORT_ALIGN_CLOSING_BLOCK || 'false').toLowerCase() ===
     'false';
   if (off || !docXml) return docXml;
 
@@ -353,7 +349,7 @@ function applyClinicalClosingAlignmentToDocXml(docXml) {
 function applyClinicalClosingAlignmentToDocxPath(docxPath) {
   if (!docxPath || !fs.existsSync(docxPath)) return;
   const off =
-    String(process.env.REPORT_ALIGN_CLOSING_BLOCK || 'true').toLowerCase() ===
+    String(process.env.REPORT_ALIGN_CLOSING_BLOCK || 'false').toLowerCase() ===
     'false';
   if (off) return;
 
@@ -650,19 +646,6 @@ function buildLogoParagraphXml(rid, cx, cy) {
   );
 }
 
-function isParagraphXmlEmpty(pXml) {
-  if (!pXml) return false;
-  // Consider empty if it has no text, no drawing, no table, no embedded objects.
-  return (
-    !pXml.includes('<w:t') &&
-    !pXml.includes('<w:drawing') &&
-    !pXml.includes('<w:object') &&
-    !pXml.includes('<w:pict') &&
-    !pXml.includes('<w:tbl') &&
-    !pXml.includes('<w:hyperlink')
-  );
-}
-
 /** Đoạn chỉ có khoảng trắng / không có chữ — thường gây khoảng trắng dọc lớn sau khi LibreOffice chuyển RTF. */
 function isParagraphXmlEffectivelyEmpty(pXml) {
   if (!pXml) return false;
@@ -720,15 +703,23 @@ function sanitizeInjectedRtfParagraphs(innerXml) {
   return out.join('');
 }
 
-function removeFirstEmptyParagraphAfter(docXml, afterIdx) {
-  const start = docXml.indexOf('<w:p', afterIdx);
-  if (start < 0) return docXml;
-  const end = docXml.indexOf('</w:p>', start);
-  if (end < 0) return docXml;
-  const endTag = end + '</w:p>'.length;
-  const pXml = docXml.slice(start, endTag);
-  if (!isParagraphXmlEmpty(pXml)) return docXml;
-  return docXml.slice(0, start) + docXml.slice(endTag);
+function removeConsecutiveEmptyParagraphsAfter(docXml, afterIdx, maxRemove = 6) {
+  let out = docXml;
+  let idx = afterIdx;
+  let removed = 0;
+  while (removed < maxRemove) {
+    const start = out.indexOf('<w:p', idx);
+    if (start < 0) break;
+    const end = out.indexOf('</w:p>', start);
+    if (end < 0) break;
+    const endTag = end + '</w:p>'.length;
+    const pXml = out.slice(start, endTag);
+    if (!isParagraphXmlEffectivelyEmpty(pXml)) break;
+    out = out.slice(0, start) + out.slice(endTag);
+    idx = start;
+    removed += 1;
+  }
+  return out;
 }
 
 /**
@@ -753,6 +744,13 @@ function insertLogoIntoDocxIfExists(docxPath, templateBasePath) {
     }
     let docXml = docFile.asText();
     let relsXml = relsFile.asText();
+
+    // Prevent double-insertion when templates were preprocessed already.
+    if (docXml.includes('name="logo"') || docXml.includes('name="Logo')) {
+      logger.info(`insertLogo: logo marker already exists in ${path.basename(docxPath)} — skip`);
+      return true;
+    }
+
     const logoExt = path.extname(logoPath).toLowerCase() || '.jpg';
     const mediaName = `logo_${crypto.randomBytes(4).toString('hex')}${logoExt}`;
     const mediaTarget = `media/${mediaName}`;
@@ -760,16 +758,19 @@ function insertLogoIntoDocxIfExists(docxPath, templateBasePath) {
     relsXml = addImageRelationship(relsXml, rid, mediaTarget);
     zip.file(`word/${mediaTarget}`, fs.readFileSync(logoPath));
     const size = readImageSize(logoPath) || { width: 800, height: 200 };
-    const fitted = fitSizeToBox(size.width, size.height, 560, 180);
+    const maxWRaw = parseInt(process.env.REPORT_LOGO_BOX_W || '560', 10);
+    const maxHRaw = parseInt(process.env.REPORT_LOGO_BOX_H || '140', 10);
+    const maxW = Number.isFinite(maxWRaw) ? Math.max(120, Math.min(1200, maxWRaw)) : 560;
+    const maxH = Number.isFinite(maxHRaw) ? Math.max(40, Math.min(600, maxHRaw)) : 140;
+    const fitted = fitSizeToBox(size.width, size.height, maxW, maxH);
     const EMU_PER_PX = 9525;
     const cx = fitted.w * EMU_PER_PX;
     const cy = fitted.h * EMU_PER_PX;
     const logoPara = buildLogoParagraphXml(rid, cx, cy);
     docXml = insertXmlAfterBodyOpen(docXml, logoPara);
-    // Some templates start with an empty paragraph; remove the first empty paragraph after inserted logo.
     const logoPos = docXml.indexOf(logoPara);
     if (logoPos >= 0) {
-      docXml = removeFirstEmptyParagraphAfter(docXml, logoPos + logoPara.length);
+      docXml = removeConsecutiveEmptyParagraphsAfter(docXml, logoPos + logoPara.length);
     }
     zip.file('word/document.xml', docXml);
     zip.file('word/_rels/document.xml.rels', relsXml);
@@ -780,40 +781,6 @@ function insertLogoIntoDocxIfExists(docxPath, templateBasePath) {
     logger.warn(`Failed to insert logo: ${e.message}`);
     return false;
   }
-}
-
-/**
- * Template MRI (và một số mẫu CDHA) đã có header/logo trong file .doc — chèn logo.jpg thêm sẽ bị đôi.
- * - Luôn bỏ qua với MRI.doc / MRI.docx (không phân biệt hoa thường).
- * - Tùy chọn: SKIP_LOGO_TEMPLATE_NAMES=Other.doc,Foo.doc (basename, phân tách bằng dấu phẩy)
- * - Tùy chọn: SKIP_LOGO_PATHOLOGY_TYPES=7 (PathologyType trong DB, ví dụ MRI = 7 ở một số bệnh viện)
- */
-function shouldSkipProgrammaticLogo(templatePath, pathologyType) {
-  const base = path.basename(String(templatePath || '').trim()).toLowerCase();
-  if (base === 'mri.doc' || base === 'mri.docx') {
-    return true;
-  }
-
-  const namesExtra = process.env.SKIP_LOGO_TEMPLATE_NAMES || '';
-  if (namesExtra.trim()) {
-    const set = new Set(
-      namesExtra.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
-    );
-    if (set.has(base)) return true;
-  }
-
-  const typesExtra = process.env.SKIP_LOGO_PATHOLOGY_TYPES || '';
-  if (typesExtra.trim()) {
-    const set = new Set(
-      typesExtra
-        .split(',')
-        .map((s) => parseInt(s.trim(), 10))
-        .filter((n) => !Number.isNaN(n)),
-    );
-    if (set.has(Number(pathologyType))) return true;
-  }
-
-  return false;
 }
 
 /**
@@ -1053,18 +1020,6 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
     throw new Error(`LibreOffice could not convert template to DOCX: ${stagedTemplate}`);
   }
 
-  if (ctx.templatesDir) {
-    if (shouldSkipProgrammaticLogo(templatePath, record.pathologyType)) {
-      logger.info('Skip programmatic logo for template', {
-        template: path.basename(templatePath),
-        pathologyType: record.pathologyType,
-        imagingResultId: record.imagingResultId,
-      });
-    } else {
-      insertLogoIntoDocxIfExists(templateDocxPath, ctx.templatesDir);
-    }
-  }
-
   const tmpPrefix = path.join(tempDir, `rtf_${record.imagingResultId}_${segmentIndex}`);
 
   // Fallback plain-text (used if RTF injection fails)
@@ -1216,4 +1171,5 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
 module.exports = {
   renderRecordToPdf,
   buildRenderPayload,
+  insertLogoIntoDocxIfExists,
 };
