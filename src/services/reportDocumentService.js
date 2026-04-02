@@ -722,12 +722,130 @@ function removeConsecutiveEmptyParagraphsAfter(docXml, afterIdx, maxRemove = 6) 
   return out;
 }
 
-/**
- * Giống MedicalReportServer ReportService.InsertLogoIfExists: đặt logo.jpg trong thư mục template (PATHS_TEMPLATES).
- */
-function insertLogoIntoDocxIfExists(docxPath, templateBasePath) {
-  return false;
+/** Sau đoạn logo: chỉ giữ đúng một đoạn trống (khoảng cách) trước nội dung tiếp theo. */
+function normalizeSpacingAfterLogoParagraph(docXml, logoParaXml) {
+  const pos = docXml.indexOf(logoParaXml);
+  if (pos < 0) return docXml;
+  const afterLogo = pos + logoParaXml.length;
+  const rest = docXml.slice(afterLogo);
+  const emptyRanges = [];
+  let offset = 0;
+  while (true) {
+    const start = rest.indexOf('<w:p', offset);
+    if (start < 0) break;
+    const end = rest.indexOf('</w:p>', start);
+    if (end < 0) break;
+    const endTag = end + '</w:p>'.length;
+    const pXml = rest.slice(start, endTag);
+    if (!isParagraphXmlEffectivelyEmpty(pXml)) break;
+    emptyRanges.push({ start: afterLogo + start, end: afterLogo + endTag });
+    offset = endTag;
+  }
+  const spacer =
+    '<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/></w:pPr></w:p>';
+  if (emptyRanges.length === 0) {
+    return docXml.slice(0, afterLogo) + spacer + docXml.slice(afterLogo);
+  }
+  if (emptyRanges.length === 1) {
+    return docXml;
+  }
+  const first = emptyRanges[0].start;
+  const last = emptyRanges[emptyRanges.length - 1].end;
+  return docXml.slice(0, first) + spacer + docXml.slice(last);
 }
+
+const KHAM_SUC_KHOE_BINH_THUONG = 'KhamSucKhoe (BinhThuong).doc';
+
+/**
+ * Chèn logo chỉ cho template KhamSucKhoe (BinhThuong).doc — đặt logo.jpg trong thư mục Templates (PATHS_TEMPLATES).
+ * @param {string} templateFileBasename — basename file gốc, ví dụ KhamSucKhoe (BinhThuong).doc
+ */
+function insertLogoIntoDocxIfExists(docxPath, templateBasePath, templateFileBasename) {
+  if (!docxPath || !templateBasePath) return false;
+  if (String(templateFileBasename || '').trim() !== KHAM_SUC_KHOE_BINH_THUONG) {
+    return false;
+  }
+  const logoPath = resolveLogoFileOnDisk(templateBasePath);
+  if (!logoPath) {
+    logger.info(
+      `No logo file (tried ${LOGO_CANDIDATES.join(', ')}) in ${path.resolve(templateBasePath)} — skip (KhamSucKhoe)`,
+    );
+    return false;
+  }
+  try {
+    const zip = new PizZip(fs.readFileSync(docxPath));
+    const docFile = zip.file('word/document.xml');
+    const relsFile = zip.file('word/_rels/document.xml.rels');
+    if (!docFile || !relsFile) {
+      logger.warn('insertLogo: missing word/document.xml or word/_rels/document.xml.rels');
+      return false;
+    }
+    let docXml = docFile.asText();
+    let relsXml = relsFile.asText();
+
+    if (docXml.includes('name="logo"') || docXml.includes('name="Logo')) {
+      logger.info(`insertLogo: logo marker already exists in ${path.basename(docxPath)} — skip`);
+      return true;
+    }
+
+    const logoExt = path.extname(logoPath).toLowerCase() || '.jpg';
+    const mediaName = `logo_${crypto.randomBytes(4).toString('hex')}${logoExt}`;
+    const mediaTarget = `media/${mediaName}`;
+    const rid = nextRelIdFromRels(relsXml);
+    relsXml = addImageRelationship(relsXml, rid, mediaTarget);
+    zip.file(`word/${mediaTarget}`, fs.readFileSync(logoPath));
+    const size = readImageSize(logoPath) || { width: 800, height: 200 };
+    const maxWRaw = parseInt(process.env.REPORT_LOGO_BOX_W || '560', 10);
+    const maxHRaw = parseInt(process.env.REPORT_LOGO_BOX_H || '140', 10);
+    const maxW = Number.isFinite(maxWRaw) ? Math.max(120, Math.min(1200, maxWRaw)) : 560;
+    const maxH = Number.isFinite(maxHRaw) ? Math.max(40, Math.min(600, maxHRaw)) : 140;
+    const fitted = fitSizeToBox(size.width, size.height, maxW, maxH);
+    const EMU_PER_PX = 9525;
+    const cx = fitted.w * EMU_PER_PX;
+    const cy = fitted.h * EMU_PER_PX;
+    const logoPara = buildLogoParagraphXml(rid, cx, cy);
+    docXml = insertXmlAfterBodyOpen(docXml, logoPara);
+    docXml = normalizeSpacingAfterLogoParagraph(docXml, logoPara);
+
+    zip.file('word/document.xml', docXml);
+    zip.file('word/_rels/document.xml.rels', relsXml);
+    fs.writeFileSync(docxPath, zip.generate({ type: 'nodebuffer' }));
+    logger.info(`Inserted logo from ${path.basename(logoPath)} into ${path.basename(docxPath)} (KhamSucKhoe)`);
+    return true;
+  } catch (e) {
+    logger.warn(`Failed to insert logo: ${e.message}`);
+    return false;
+  }
+}
+
+function relsPathForWordPart(partName) {
+  const n = partName.replace(/\\/g, '/');
+  const base = path.posix.basename(n);
+  return `word/_rels/${base}.rels`;
+}
+
+function listEmbedCandidateXmlParts(zip) {
+  const out = [];
+  for (const name of Object.keys(zip.files)) {
+    const entry = zip.files[name];
+    if (!entry || entry.dir) continue;
+    const n = name.replace(/\\/g, '/');
+    if (
+      /^word\/document\.xml$/i.test(n) ||
+      /^word\/header\d+\.xml$/i.test(n) ||
+      /^word\/footer\d+\.xml$/i.test(n) ||
+      /^word\/footnotes\.xml$/i.test(n) ||
+      /^word\/endnotes\.xml$/i.test(n)
+    ) {
+      out.push(n);
+    }
+  }
+  return out.sort();
+}
+
+const EMPTY_RELS_XML =
+  '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+  '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
 
 /**
  * Một số template gõ nhầm `___IMG_1___` (ba gạch); code chỉ thay `__IMG_1__`.
@@ -748,7 +866,9 @@ function normalizeImagePlaceholderTokensInDocx(docxPath) {
       if (
         n !== 'word/document.xml' &&
         !/^word\/header\d+\.xml$/i.test(n) &&
-        !/^word\/footer\d+\.xml$/i.test(n)
+        !/^word\/footer\d+\.xml$/i.test(n) &&
+        n !== 'word/footnotes.xml' &&
+        n !== 'word/endnotes.xml'
       ) {
         continue;
       }
@@ -769,18 +889,39 @@ function normalizeImagePlaceholderTokensInDocx(docxPath) {
 
 async function embedImagesIntoDocx(renderedDocxPath, tokenToImagePath) {
   const zip = new PizZip(fs.readFileSync(renderedDocxPath));
-  const docXmlFile = zip.file('word/document.xml');
-  const relsFile = zip.file('word/_rels/document.xml.rels');
-  if (!docXmlFile || !relsFile) return { embedded: 0, embeddedPaths: [] };
+  if (!zip.file('word/document.xml')) {
+    return { embedded: 0, embeddedPaths: [] };
+  }
 
-  let docXml = docXmlFile.asText();
-  let relsXml = relsFile.asText();
   let embedded = 0;
   const embeddedPaths = [];
+  const parts = listEmbedCandidateXmlParts(zip);
 
   for (const [token, imagePath] of Object.entries(tokenToImagePath || {})) {
     if (!imagePath || !fs.existsSync(imagePath)) continue;
-    if (!docContainsTokenInParagraphs(docXml, token)) continue;
+
+    let partName = null;
+    let partXml = '';
+    for (const candidate of parts) {
+      const xml = zip.file(candidate).asText();
+      if (docContainsTokenInParagraphs(xml, token)) {
+        partName = candidate;
+        partXml = xml;
+        break;
+      }
+    }
+    if (!partName) {
+      logger.warn(
+        `Embed: không tìm thấy token trong document/header/footer/footnotes/endnotes — ${token} (file=${path.basename(renderedDocxPath)})`,
+      );
+      continue;
+    }
+
+    const relsKey = relsPathForWordPart(partName);
+    let relsXml = zip.file(relsKey)?.asText();
+    if (!relsXml) {
+      relsXml = EMPTY_RELS_XML;
+    }
 
     const ext = path.extname(imagePath).toLowerCase() || '.jpg';
     const mediaName = `img_${crypto.randomBytes(6).toString('hex')}${ext}`;
@@ -798,13 +939,13 @@ async function embedImagesIntoDocx(renderedDocxPath, tokenToImagePath) {
     const cy = fitted.h * EMU_PER_PX;
 
     const paraXml = buildInlineImageParagraphXml(rid, cx, cy);
-    docXml = replaceParagraphContainingToken(docXml, token, paraXml);
+    partXml = replaceParagraphContainingToken(partXml, token, paraXml);
+    zip.file(partName, partXml);
+    zip.file(relsKey, relsXml);
     embedded += 1;
     embeddedPaths.push(path.resolve(imagePath));
   }
 
-  zip.file('word/document.xml', docXml);
-  zip.file('word/_rels/document.xml.rels', relsXml);
   fs.writeFileSync(renderedDocxPath, zip.generate({ type: 'nodebuffer' }));
   return { embedded, embeddedPaths };
 }
@@ -965,6 +1106,12 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
   if (!fs.existsSync(templateDocxPath)) {
     throw new Error(`LibreOffice could not convert template to DOCX: ${stagedTemplate}`);
   }
+
+  insertLogoIntoDocxIfExists(
+    templateDocxPath,
+    path.dirname(templatePath),
+    path.basename(templatePath),
+  );
 
   const tmpPrefix = path.join(tempDir, `rtf_${record.imagingResultId}_${segmentIndex}`);
 
