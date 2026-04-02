@@ -66,6 +66,9 @@ function buildRenderPayload(record, rtfTokens) {
     Suggestion: str(rtfTokens.suggestionToken),
     SessionId: str(record.sessionId),
     FileNum: str(record.fileNum),
+    PacsViewURL: str(record.pacs?.viewUrl),
+    PacsFileResultURL: str(record.pacs?.fileResultUrl),
+    PacsAccessCode: str(record.pacs?.accessCode),
   };
   for (let i = 1; i <= IMAGE_KEYS_MAX; i += 1) {
     payload[`Image${i}`] = '';
@@ -517,6 +520,40 @@ function insertLogoIntoDocxIfExists(docxPath, templateBasePath) {
   }
 }
 
+/**
+ * Template MRI (và một số mẫu CDHA) đã có header/logo trong file .doc — chèn logo.jpg thêm sẽ bị đôi.
+ * - Luôn bỏ qua với MRI.doc / MRI.docx (không phân biệt hoa thường).
+ * - Tùy chọn: SKIP_LOGO_TEMPLATE_NAMES=Other.doc,Foo.doc (basename, phân tách bằng dấu phẩy)
+ * - Tùy chọn: SKIP_LOGO_PATHOLOGY_TYPES=7 (PathologyType trong DB, ví dụ MRI = 7 ở một số bệnh viện)
+ */
+function shouldSkipProgrammaticLogo(templatePath, pathologyType) {
+  const base = path.basename(String(templatePath || '').trim()).toLowerCase();
+  if (base === 'mri.doc' || base === 'mri.docx') {
+    return true;
+  }
+
+  const namesExtra = process.env.SKIP_LOGO_TEMPLATE_NAMES || '';
+  if (namesExtra.trim()) {
+    const set = new Set(
+      namesExtra.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
+    );
+    if (set.has(base)) return true;
+  }
+
+  const typesExtra = process.env.SKIP_LOGO_PATHOLOGY_TYPES || '';
+  if (typesExtra.trim()) {
+    const set = new Set(
+      typesExtra
+        .split(',')
+        .map((s) => parseInt(s.trim(), 10))
+        .filter((n) => !Number.isNaN(n)),
+    );
+    if (set.has(Number(pathologyType))) return true;
+  }
+
+  return false;
+}
+
 async function embedImagesIntoDocx(renderedDocxPath, tokenToImagePath) {
   const zip = new PizZip(fs.readFileSync(renderedDocxPath));
   const docXmlFile = zip.file('word/document.xml');
@@ -717,7 +754,15 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
   }
 
   if (ctx.templatesDir) {
-    insertLogoIntoDocxIfExists(templateDocxPath, ctx.templatesDir);
+    if (shouldSkipProgrammaticLogo(templatePath, record.pathologyType)) {
+      logger.info('Skip programmatic logo for template', {
+        template: path.basename(templatePath),
+        pathologyType: record.pathologyType,
+        imagingResultId: record.imagingResultId,
+      });
+    } else {
+      insertLogoIntoDocxIfExists(templateDocxPath, ctx.templatesDir);
+    }
   }
 
   const tmpPrefix = path.join(tempDir, `rtf_${record.imagingResultId}_${segmentIndex}`);

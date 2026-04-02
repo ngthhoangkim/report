@@ -4,7 +4,11 @@ const os = require('os');
 const crypto = require('crypto');
 const logger = require('../utils/logger');
 const { getPaths } = require('../config/paths');
-const { getReportDataListByFileNumAndSessionId } = require('../repositories/reportRepository');
+const {
+  getReportDataListByFileNumAndSessionId,
+  getLatestPacsInfoForSession,
+} = require('../repositories/reportRepository');
+const { fetchPdfBuffer } = require('../utils/fetchPdf');
 const { FileCopyHelper } = require('./fileCopyHelper');
 const { TemplateSelector } = require('./templateSelector');
 const { renderRecordToPdf } = require('./reportDocumentService');
@@ -65,6 +69,29 @@ async function generatePdfByFileNumAndSessionId(fileNum, sessionId, options = {}
       throw err;
     }
 
+    const pacsRows = await getLatestPacsInfoForSession(fileNum, sessionId);
+    const pacsByRequestId = new Map();
+    for (const row of pacsRows) {
+      pacsByRequestId.set(row.requestId, row);
+    }
+    for (const r of records) {
+      if (r.requestId != null && pacsByRequestId.has(r.requestId)) {
+        const p = pacsByRequestId.get(r.requestId);
+        r.pacs = {
+          viewUrl: p.viewUrl || '',
+          fileResultUrl: p.fileResultUrl || '',
+          accessCode: p.accessCode || '',
+        };
+      }
+    }
+
+    const mergePacsPdf =
+      String(process.env.PACS_MERGE_PDF || 'true').toLowerCase() !== 'false';
+    const pacsFetchTimeoutMs = parseInt(
+      process.env.PACS_FETCH_TIMEOUT_MS || '45000',
+      10,
+    );
+
     const pdfBase = resolveOutputPdfBaseName(
       records,
       fileNum,
@@ -91,6 +118,8 @@ async function generatePdfByFileNumAndSessionId(fileNum, sessionId, options = {}
 
     const segmentBuffers = [];
     let skipped = 0;
+    const pacsMergedFromUrls = [];
+    const pacsFetchErrors = [];
 
     try {
       for (let idx = 0; idx < records.length; idx++) {
@@ -110,15 +139,41 @@ async function generatePdfByFileNumAndSessionId(fileNum, sessionId, options = {}
         }
       }
 
-      if (!segmentBuffers.length) {
+      const pacsPdfBuffers = [];
+      if (mergePacsPdf && pacsRows.length > 0) {
+        const seenUrl = new Set();
+        for (const row of pacsRows) {
+          const u = row.fileResultUrl && String(row.fileResultUrl).trim();
+          if (!u || seenUrl.has(u)) continue;
+          seenUrl.add(u);
+          try {
+            const buf = await fetchPdfBuffer(u, {
+              timeoutMs: Number.isNaN(pacsFetchTimeoutMs)
+                ? 45000
+                : pacsFetchTimeoutMs,
+            });
+            pacsPdfBuffers.push(buf);
+            pacsMergedFromUrls.push(u);
+          } catch (e) {
+            pacsFetchErrors.push({ url: u, message: e.message });
+            logger.warn(
+              `PACS PDF fetch failed RequestId=${row.requestId}: ${e.message}`,
+            );
+          }
+        }
+      }
+
+      const allBuffers = segmentBuffers.concat(pacsPdfBuffers);
+
+      if (!allBuffers.length) {
         const err = new Error(
-          `No documents generated for FileNum=${fileNum}, SessionId=${sessionId} (skipped=${skipped}).`,
+          `No PDF output for FileNum=${fileNum}, SessionId=${sessionId} (CDHA skipped=${skipped}; PACS URLs tried=${pacsMergedFromUrls.length + pacsFetchErrors.length}).`,
         );
         err.code = 'NO_SEGMENTS';
         throw err;
       }
 
-      const merged = await mergePdfBuffers(segmentBuffers);
+      const merged = await mergePdfBuffers(allBuffers);
       ensureDirectoryExists(paths.output);
       const finalPath = path.join(paths.output, finalName);
 
@@ -143,6 +198,10 @@ async function generatePdfByFileNumAndSessionId(fileNum, sessionId, options = {}
         fileName: finalName,
         segmentCount: segmentBuffers.length,
         skippedRecords: skipped,
+        pacsRequestRows: pacsRows.length,
+        pacsPdfAppended: pacsPdfBuffers.length,
+        pacsMergedUrls: pacsMergedFromUrls,
+        pacsFetchErrors: pacsFetchErrors.length ? pacsFetchErrors : undefined,
       };
     } finally {
       cleanupDirectory(tempRoot);

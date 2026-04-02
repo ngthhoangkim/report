@@ -17,6 +17,7 @@ const SQL_REPORT_LIST_BY_FILE_AND_SESSION = `
     v.RequestedDoctor,
     r.CreatedDate AS ngayKham,
     r.FileName,
+    r.RequestId,
     r.Id AS ImagingResultId,
     r.SampleNumber,
     d.ResultData,
@@ -54,6 +55,7 @@ function normalizeRecord(row) {
     requestedDoctor: row.RequestedDoctor || '',
     ngayKham: row.ngayKham ?? row.NgayKham,
     fileName: row.FileName || '',
+    requestId: row.RequestId != null ? Number(row.RequestId) : null,
     imagingResultId: row.ImagingResultId,
     resultData: row.ResultData,
     conclusionData: row.ConclusionData,
@@ -135,8 +137,61 @@ async function getPrintedImageFilenames(resultId) {
   return rows.map((r) => r.Filename).filter(Boolean);
 }
 
+const SQL_LATEST_PACS_PER_REQUEST_FOR_SESSION = `
+WITH Req AS (
+  SELECT DISTINCT r.RequestId
+  FROM dbo.CN_ImagingResult r
+  INNER JOIN dbo.ViewImagingResult v ON v.Id = r.Id
+  WHERE v.FileNum = @fileNum
+    AND v.SessionId = @sessionId
+    AND r.DeletedDate IS NULL
+    AND r.RequestId IS NOT NULL
+),
+Ranked AS (
+  SELECT
+    p.RequestId,
+    p.Id,
+    p.AccessCode,
+    p.ViewURL,
+    p.FileResultURL,
+    p.CreatedDate,
+    ROW_NUMBER() OVER (PARTITION BY p.RequestId ORDER BY p.Id DESC) AS rn
+  FROM dbo.PACS_RequestInfo p
+  INNER JOIN Req ON Req.RequestId = p.RequestId
+)
+SELECT
+  RequestId,
+  Id AS PacsRequestInfoId,
+  AccessCode,
+  ViewURL,
+  FileResultURL,
+  CreatedDate
+FROM Ranked
+WHERE rn = 1
+ORDER BY RequestId;
+`;
+
+/**
+ * Mỗi RequestId trong phiên: một dòng PACS_RequestInfo mới nhất (theo Id).
+ */
+async function getLatestPacsInfoForSession(fileNum, sessionId) {
+  const rows = await db.executeQuery(SQL_LATEST_PACS_PER_REQUEST_FOR_SESSION, {
+    fileNum,
+    sessionId,
+  });
+  return rows.map((row) => ({
+    requestId: row.RequestId != null ? Number(row.RequestId) : null,
+    pacsRequestInfoId: row.PacsRequestInfoId != null ? Number(row.PacsRequestInfoId) : null,
+    accessCode: row.AccessCode != null ? String(row.AccessCode) : '',
+    viewUrl: row.ViewURL != null ? String(row.ViewURL).trim() : '',
+    fileResultUrl: row.FileResultURL != null ? String(row.FileResultURL).trim() : '',
+    createdDate: row.CreatedDate,
+  })).filter((r) => r.requestId != null);
+}
+
 module.exports = {
   getReportDataListByFileNumAndSessionId,
+  getLatestPacsInfoForSession,
   getPrintedImageFilenames,
   /**
    * Polling: lấy danh sách session có imaging result cập nhật mới hơn checkpoint.

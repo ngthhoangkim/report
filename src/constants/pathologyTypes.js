@@ -5,6 +5,8 @@ const PathologyType = {
   XRay: 2,
   NoiSoi: 3,
   SieuAm: 4,
+  /** Một số cơ sở map MRI vào giá trị 7 trong CN_ImagingResult.PathologyType */
+  Mri: 7,
 };
 
 function isSupportedPathologyType(pathologyType) {
