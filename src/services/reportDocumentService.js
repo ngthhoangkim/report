@@ -726,61 +726,7 @@ function removeConsecutiveEmptyParagraphsAfter(docXml, afterIdx, maxRemove = 6) 
  * Giống MedicalReportServer ReportService.InsertLogoIfExists: đặt logo.jpg trong thư mục template (PATHS_TEMPLATES).
  */
 function insertLogoIntoDocxIfExists(docxPath, templateBasePath) {
-  if (!docxPath || !templateBasePath) return false;
-  const logoPath = resolveLogoFileOnDisk(templateBasePath);
-  if (!logoPath) {
-    logger.info(
-      `No logo file (tried ${LOGO_CANDIDATES.join(', ')}) in ${path.resolve(templateBasePath)} — skip`,
-    );
-    return false;
-  }
-  try {
-    const zip = new PizZip(fs.readFileSync(docxPath));
-    const docFile = zip.file('word/document.xml');
-    const relsFile = zip.file('word/_rels/document.xml.rels');
-    if (!docFile || !relsFile) {
-      logger.warn('insertLogo: missing word/document.xml or word/_rels/document.xml.rels');
-      return false;
-    }
-    let docXml = docFile.asText();
-    let relsXml = relsFile.asText();
-
-    // Prevent double-insertion when templates were preprocessed already.
-    if (docXml.includes('name="logo"') || docXml.includes('name="Logo')) {
-      logger.info(`insertLogo: logo marker already exists in ${path.basename(docxPath)} — skip`);
-      return true;
-    }
-
-    const logoExt = path.extname(logoPath).toLowerCase() || '.jpg';
-    const mediaName = `logo_${crypto.randomBytes(4).toString('hex')}${logoExt}`;
-    const mediaTarget = `media/${mediaName}`;
-    const rid = nextRelIdFromRels(relsXml);
-    relsXml = addImageRelationship(relsXml, rid, mediaTarget);
-    zip.file(`word/${mediaTarget}`, fs.readFileSync(logoPath));
-    const size = readImageSize(logoPath) || { width: 800, height: 200 };
-    const maxWRaw = parseInt(process.env.REPORT_LOGO_BOX_W || '560', 10);
-    const maxHRaw = parseInt(process.env.REPORT_LOGO_BOX_H || '140', 10);
-    const maxW = Number.isFinite(maxWRaw) ? Math.max(120, Math.min(1200, maxWRaw)) : 560;
-    const maxH = Number.isFinite(maxHRaw) ? Math.max(40, Math.min(600, maxHRaw)) : 140;
-    const fitted = fitSizeToBox(size.width, size.height, maxW, maxH);
-    const EMU_PER_PX = 9525;
-    const cx = fitted.w * EMU_PER_PX;
-    const cy = fitted.h * EMU_PER_PX;
-    const logoPara = buildLogoParagraphXml(rid, cx, cy);
-    docXml = insertXmlAfterBodyOpen(docXml, logoPara);
-    const logoPos = docXml.indexOf(logoPara);
-    if (logoPos >= 0) {
-      docXml = removeConsecutiveEmptyParagraphsAfter(docXml, logoPos + logoPara.length);
-    }
-    zip.file('word/document.xml', docXml);
-    zip.file('word/_rels/document.xml.rels', relsXml);
-    fs.writeFileSync(docxPath, zip.generate({ type: 'nodebuffer' }));
-    logger.info(`Inserted logo from ${path.basename(logoPath)} into ${path.basename(docxPath)}`);
-    return true;
-  } catch (e) {
-    logger.warn(`Failed to insert logo: ${e.message}`);
-    return false;
-  }
+  return false;
 }
 
 /**
