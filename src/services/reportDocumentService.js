@@ -40,6 +40,19 @@ function str(v) {
   return String(v);
 }
 
+/** Giảm block newline/spaces thừa từ DB khi render plain vào template (không đụng token RTF/ảnh). */
+function strReportField(v) {
+  const s = str(v);
+  if (!s) return '';
+  if (s.includes('__RTF_') || s.includes('__IMG_')) return s;
+  return s
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n{5,}/g, '\n\n\n\n')
+    .trim();
+}
+
 /**
  * Payload render docx.
  * - Tránh "undefined" bằng cách luôn trả '' cho key thiếu/không set.
@@ -52,7 +65,7 @@ function buildRenderPayload(record, rtfTokens) {
     PatientName: str(record.patientName),
     Age: str(calcAge(record.dob, record.ngayKham)),
     Gender: str(record.gender),
-    Diagnosis: str(record.conclusion),
+    Diagnosis: strReportField(record.conclusion),
     ReferDoctor: str(record.requestedDoctor),
     Doctor: str(buildDoctorLabel(record)),
     ItemNum: str(record.itemNum),
@@ -61,9 +74,9 @@ function buildRenderPayload(record, rtfTokens) {
     PathologyName: '',
     CDNS: '',
     DateRpt: str(formatDateVN(record.ngayKham)),
-    Result: str(rtfTokens.resultToken),
-    Conclusion: str(rtfTokens.conclusionToken),
-    Suggestion: str(rtfTokens.suggestionToken),
+    Result: strReportField(rtfTokens.resultToken),
+    Conclusion: strReportField(rtfTokens.conclusionToken),
+    Suggestion: strReportField(rtfTokens.suggestionToken),
     SessionId: str(record.sessionId),
     FileNum: str(record.fileNum),
     PacsViewURL: str(record.pacs?.viewUrl),
@@ -445,7 +458,8 @@ async function injectRtfIntoDocx(renderedDocxPath, tokenToRtf, tempDirForRtf) {
     }
 
     const convDocXml = convDocFile.asText();
-    const replacementInnerXml = extractWordDocumentXmlInnerBody(convDocXml);
+    let replacementInnerXml = extractWordDocumentXmlInnerBody(convDocXml);
+    replacementInnerXml = sanitizeInjectedRtfParagraphs(replacementInnerXml);
 
     // Replace paragraph containing token with paragraphs from converted rtf.
     mainDocXml = replaceParagraphContainingToken(mainDocXml, token, replacementInnerXml);
@@ -641,6 +655,63 @@ function isParagraphXmlEmpty(pXml) {
     !pXml.includes('<w:tbl') &&
     !pXml.includes('<w:hyperlink')
   );
+}
+
+/** Đoạn chỉ có khoảng trắng / không có chữ — thường gây khoảng trắng dọc lớn sau khi LibreOffice chuyển RTF. */
+function isParagraphXmlEffectivelyEmpty(pXml) {
+  if (!pXml) return false;
+  if (
+    pXml.includes('<w:drawing') ||
+    pXml.includes('<w:object') ||
+    pXml.includes('<w:pict') ||
+    pXml.includes('<w:tbl') ||
+    pXml.includes('<w:hyperlink')
+  ) {
+    return false;
+  }
+  const plain = paragraphPlainText(pXml);
+  return plain.replace(/\s+/g, '').length === 0;
+}
+
+/**
+ * Bỏ đoạn trống đầu/cuối và gộp nhiều đoạn trống liên tiếp (từ body RTF merge).
+ * Tắt: REPORT_SANITIZE_RTF_WHITESPACE=false
+ * Số đoạn trống tối đa liên tiếp giữ lại: REPORT_RTF_MAX_CONSECUTIVE_EMPTY_PARAS (mặc định 2)
+ */
+function sanitizeInjectedRtfParagraphs(innerXml) {
+  if (
+    String(process.env.REPORT_SANITIZE_RTF_WHITESPACE || 'true').toLowerCase() === 'false'
+  ) {
+    return innerXml;
+  }
+  if (!innerXml || !innerXml.trim()) return innerXml;
+
+  const parsed = parseInt(process.env.REPORT_RTF_MAX_CONSECUTIVE_EMPTY_PARAS || '2', 10);
+  const maxRun = Number.isFinite(parsed) ? Math.max(1, Math.min(10, parsed)) : 2;
+
+  const paras = [];
+  OOXML_PARA_REGEX.lastIndex = 0;
+  let m;
+  while ((m = OOXML_PARA_REGEX.exec(innerXml)) !== null) {
+    paras.push(m[0]);
+  }
+  if (!paras.length) return innerXml;
+
+  while (paras.length && isParagraphXmlEffectivelyEmpty(paras[0])) paras.shift();
+  while (paras.length && isParagraphXmlEffectivelyEmpty(paras[paras.length - 1])) paras.pop();
+
+  const out = [];
+  let emptyRun = 0;
+  for (const p of paras) {
+    if (isParagraphXmlEffectivelyEmpty(p)) {
+      emptyRun += 1;
+      if (emptyRun <= maxRun) out.push(p);
+    } else {
+      emptyRun = 0;
+      out.push(p);
+    }
+  }
+  return out.join('');
 }
 
 function removeFirstEmptyParagraphAfter(docXml, afterIdx) {

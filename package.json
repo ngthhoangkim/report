@@ -28,7 +28,8 @@
     "pdf-lib": "^1.17.1",
     "pdfkit": "^0.13.0",
     "pizzip": "^3.2.0",
-    "winston": "^3.11.0"
+    "winston": "^3.11.0",
+    "winston-daily-rotate-file": "^5.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"

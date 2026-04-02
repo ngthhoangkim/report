@@ -56,6 +56,7 @@ async function runOnce() {
       // Tên file PDF: mặc định theo FileName dòng mới nhất trong session (reportGeneratorService đã xử lý).
       const result = await generatePdfByFileNumAndSessionId(g.fileNum, g.sessionId);
       ok += 1;
+      const durationMs = Date.now() - jobStarted.getTime();
       logger.info('Automation generated PDF', {
         at: jobStarted.toISOString(),
         fileNum: g.fileNum,
@@ -65,18 +66,36 @@ async function runOnce() {
         filePath: result.filePath,
         segmentCount: result.segmentCount,
         skippedRecords: result.skippedRecords,
-        durationMs: Date.now() - jobStarted.getTime(),
+        durationMs,
+      });
+      logger.appendAutomationSummary({
+        status: 'ok',
+        fileNum: g.fileNum,
+        sessionId: g.sessionId,
+        resultFileName: result.resultFileName,
+        filePath: result.filePath,
+        segmentCount: result.segmentCount,
+        skippedRecords: result.skippedRecords,
+        durationMs,
       });
     } catch (e) {
       failed += 1;
+      const durationMs = Date.now() - jobStarted.getTime();
       logger.error('Automation generate failed', {
         at: new Date().toISOString(),
         fileNum: g.fileNum,
         sessionId: g.sessionId,
-        durationMs: Date.now() - jobStarted.getTime(),
+        durationMs,
         errorMessage: e?.message || String(e),
         errorStack: e?.stack || null,
         reason: e?.code || null,
+      });
+      logger.appendAutomationSummary({
+        status: 'error',
+        fileNum: g.fileNum,
+        sessionId: g.sessionId,
+        durationMs,
+        errorMessage: e?.message || String(e),
       });
     }
 

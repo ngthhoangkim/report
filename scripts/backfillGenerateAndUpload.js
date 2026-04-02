@@ -4,8 +4,16 @@
  * Chạy theo TỪNG THÁNG (giảm tải DB), lọc trùng FileNum+SessionId trong cả job.
  *
  * Usage:
+ *   # Thử 3 ngày gần nhất (AWS / smoke test) — ưu tiên hơn --years nếu không có --from
+ *   node scripts/backfillGenerateAndUpload.js --days 3 --dry-run
+ *   node scripts/backfillGenerateAndUpload.js --days 3 --no-upload
+ *   node scripts/backfillGenerateAndUpload.js --days 3 --upload
+ *
+ *   # Khoảng ngày cố định (CreatedDate >= from và < to trong SQL)
+ *   node scripts/backfillGenerateAndUpload.js --from 2026-03-30 --to 2026-04-03 --dry-run
+ *
+ *   # 3 năm lùi từ --to (hoặc từ "bây giờ" nếu không --to)
  *   node scripts/backfillGenerateAndUpload.js --years 3 --dry-run
- *   node scripts/backfillGenerateAndUpload.js --years 3 --no-upload
  *   node scripts/backfillGenerateAndUpload.js --years 3 --upload
  *
  * Env:
@@ -13,6 +21,7 @@
  *   S3_UPLOAD_PREFIX   — mặc định khambenh/
  *   BACKFILL_CONCURRENCY — số phiên song song (mặc định 2)
  *   BACKFILL_DELAY_MS    — nghỉ giữa mỗi phiên (mặc định 0)
+ *   BACKFILL_DAYS        — số ngày lùi (giống --days) khi không có --from / --days / --years trên CLI
  *
  * "Push" ở đây = upload multipart lên API (không phải git push).
  */
@@ -25,9 +34,19 @@ const { getDistinctSessionsCreatedBetween } = require('../src/repositories/repor
 const { generatePdfByFileNumAndSessionId } = require('../src/services/reportGeneratorService');
 const logger = require('../src/utils/logger');
 
+function parseEnvDays() {
+  const raw = process.env.BACKFILL_DAYS;
+  if (raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 function parseArgs(argv) {
   const out = {
     years: 3,
+    yearsCli: false,
+    daysCli: null,
+    daysEnv: parseEnvDays(),
     dryRun: false,
     upload: false,
     limit: 0,
@@ -42,7 +61,10 @@ function parseArgs(argv) {
     else if (a === '--upload') out.upload = true;
     else if (a === '--no-upload') out.upload = false;
     else if (a === '--years' && argv[i + 1]) {
+      out.yearsCli = true;
       out.years = Number(argv[++i]);
+    } else if (a === '--days' && argv[i + 1]) {
+      out.daysCli = Number(argv[++i]);
     } else if (a === '--limit' && argv[i + 1]) {
       out.limit = Number(argv[++i]);
     } else if (a === '--from' && argv[i + 1]) {
@@ -51,19 +73,26 @@ function parseArgs(argv) {
       out.to = new Date(argv[++i]);
     } else if (a === '--concurrency' && argv[i + 1]) {
       out.concurrency = Math.max(1, Number(argv[++i]) || 1);
+    } else if (a === '--delay-ms' && argv[i + 1]) {
+      out.delayMs = Math.max(0, Number(argv[++i]) || 0);
     }
   }
   return out;
 }
 
+/**
+ * Chia [from, to) thành các đoạn không vượt qua ranh giới tháng — mỗi đoạn query DB một lần.
+ * Luôn bắt đầu đúng từ `from` (không kéo về ngày 1 tháng).
+ */
 function* monthWindows(from, to) {
-  let d = new Date(from.getFullYear(), from.getMonth(), 1);
   const end = new Date(to.getTime());
-  while (d < end) {
-    const next = new Date(d.getFullYear(), d.getMonth() + 1, 1);
-    const sliceTo = next > end ? end : next;
-    yield { from: new Date(d.getTime()), to: sliceTo };
-    d = next;
+  if (!(from < end)) return;
+  let cur = new Date(from.getTime());
+  while (cur < end) {
+    const nextMonth = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
+    const sliceEnd = nextMonth < end ? nextMonth : end;
+    yield { from: new Date(cur.getTime()), to: sliceEnd };
+    cur = sliceEnd;
   }
 }
 
@@ -111,13 +140,36 @@ async function runPool(items, concurrency, fn) {
   return errors;
 }
 
+function resolveBackfillRange(args) {
+  const to = args.to && !Number.isNaN(args.to.getTime()) ? args.to : new Date();
+
+  if (args.from && !Number.isNaN(args.from.getTime())) {
+    return { from: args.from, to, mode: 'explicit-from' };
+  }
+
+  // Ưu tiên: --days (CLI) > --years (CLI) > BACKFILL_DAYS (env) > mặc định theo năm lịch
+  if (args.daysCli != null && Number.isFinite(args.daysCli) && args.daysCli > 0) {
+    const from = new Date(to.getTime() - args.daysCli * 24 * 60 * 60 * 1000);
+    return { from, to, mode: 'days', days: args.daysCli };
+  }
+
+  if (args.yearsCli) {
+    const from = new Date(to.getFullYear() - args.years, to.getMonth(), to.getDate());
+    return { from, to, mode: 'years', years: args.years };
+  }
+
+  if (args.daysEnv != null && Number.isFinite(args.daysEnv) && args.daysEnv > 0) {
+    const from = new Date(to.getTime() - args.daysEnv * 24 * 60 * 60 * 1000);
+    return { from, to, mode: 'days', days: args.daysEnv };
+  }
+
+  const from = new Date(to.getFullYear() - args.years, to.getMonth(), to.getDate());
+  return { from, to, mode: 'years', years: args.years };
+}
+
 async function main() {
   const args = parseArgs(process.argv);
-  const to = args.to && !Number.isNaN(args.to.getTime()) ? args.to : new Date();
-  const from =
-    args.from && !Number.isNaN(args.from.getTime())
-      ? args.from
-      : new Date(to.getFullYear() - args.years, to.getMonth(), to.getDate());
+  const { from, to, mode, days, years } = resolveBackfillRange(args);
 
   const uploadBase = process.env.S3_UPLOAD_API_BASE || '';
   const prefix = process.env.S3_UPLOAD_PREFIX || 'khambenh/';
@@ -129,7 +181,9 @@ async function main() {
   logger.info('Backfill start', {
     from: from.toISOString(),
     to: to.toISOString(),
-    years: args.years,
+    rangeMode: mode,
+    days: days ?? null,
+    years: mode === 'years' ? years ?? args.years : null,
     dryRun: args.dryRun,
     upload: args.upload,
     limit: args.limit || null,
