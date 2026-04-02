@@ -171,6 +171,154 @@ function replaceParagraphContainingToken(docXml, token, replacementInnerXml) {
   return docXml;
 }
 
+function normalizeParaTextForAlignment(plain) {
+  return String(plain || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Sau inject RTF, có thể cần chỉnh đoạn chữ ký. Tiêu đề (PHIẾU / KẾT LUẬN / Đề nghị / ngày):
+ * mặc định KHÔNG ghi đè — giữ căn như RTF + template (giống nguồn).
+ *
+ * - REPORT_ALIGN_CLOSING_BLOCK=false — tắt toàn bộ bước này.
+ * - REPORT_CLOSING_HEADING_JC=preserve|rtf (mặc định) — không đụng tiêu đề/ ngày.
+ *   center | both | left — ép cùng một kiểu căn cho các dòng khớp mẫu (both = căn đều).
+ * - REPORT_ALIGN_DOCTOR_RIGHT=false — không ép căn phải dòng BS.
+ */
+function stripVnAccents(s) {
+  return String(s)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+function closingHeadingJcFromEnv() {
+  const v = String(process.env.REPORT_CLOSING_HEADING_JC || 'preserve')
+    .toLowerCase()
+    .trim();
+  if (v === 'preserve' || v === 'rtf' || v === 'template' || v === '') {
+    return null;
+  }
+  if (v === 'center') return 'center';
+  if (v === 'both' || v === 'justify') {
+    return 'both';
+  }
+  if (v === 'left') return 'left';
+  return null;
+}
+
+function isClosingHeadingPattern(plainNorm, a) {
+  const t = plainNorm;
+  if (/^PHIẾU KẾT QUẢ\b/u.test(t) || /^Phiếu kết quả\b/iu.test(t) || a.startsWith('phieu ket qua')) {
+    return true;
+  }
+  if ((/^KẾT LUẬN\b/u.test(t) || a.startsWith('ket luan')) && t.length < 64) {
+    return true;
+  }
+  if ((/^Đề nghị\b/iu.test(t) || a.startsWith('de nghi')) && t.length < 48) {
+    return true;
+  }
+  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(t)) {
+    return true;
+  }
+  return false;
+}
+
+function classifyParagraphJc(plainNorm) {
+  const t = plainNorm;
+  if (!t) return null;
+  if (t.length > 220) return null;
+
+  const a = stripVnAccents(t);
+  const headingJc = closingHeadingJcFromEnv();
+  if (headingJc && isClosingHeadingPattern(t, a)) {
+    return headingJc;
+  }
+
+  const doctorRight =
+    String(process.env.REPORT_ALIGN_DOCTOR_RIGHT || 'true').toLowerCase() !== 'false';
+  if (
+    doctorRight &&
+    /^(BS\.|Bs\.|BÁC\s*SĨ|Bác\s+sĩ|PGS[\s.]|P\.GS\.|TS[\s.]|ThS[\s.]|GS[\s.]|CK[\s.]*I\.|CKI\.)\b/i.test(
+      t,
+    )
+  ) {
+    return 'right';
+  }
+  return null;
+}
+
+function setParagraphJcSafe(paraXml, jcVal) {
+  if (!jcVal || !paraXml) return paraXml;
+  if (/<w:jc\b[^>]*w:val="/i.test(paraXml)) {
+    return paraXml.replace(
+      /(<w:jc\b[^>]*w:val=")[^"]*(")/i,
+      `$1${jcVal}$2`,
+    );
+  }
+  if (/<w:jc\b[^>]*\/>/.test(paraXml)) {
+    return paraXml.replace(/<w:jc\b[^>]*\/>/i, `<w:jc w:val="${jcVal}"/>`);
+  }
+  if (/<w:pPr\b[^>]*>/.test(paraXml)) {
+    return paraXml.replace(
+      /<w:pPr\b([^>]*)>/,
+      `<w:pPr$1><w:jc w:val="${jcVal}"/>`,
+    );
+  }
+  return paraXml.replace(
+    /<w:p\b([^>]*)>/,
+    `<w:p$1><w:pPr><w:jc w:val="${jcVal}"/></w:pPr>`,
+  );
+}
+
+function applyClinicalClosingAlignmentToDocXml(docXml) {
+  const off =
+    String(process.env.REPORT_ALIGN_CLOSING_BLOCK || 'true').toLowerCase() ===
+    'false';
+  if (off || !docXml) return docXml;
+
+  OOXML_PARA_REGEX.lastIndex = 0;
+  let out = '';
+  let lastIndex = 0;
+  let m;
+  while ((m = OOXML_PARA_REGEX.exec(docXml)) !== null) {
+    const full = m[0];
+    const plain = normalizeParaTextForAlignment(paragraphPlainText(full));
+    const jc = classifyParagraphJc(plain);
+    const replacement = jc ? setParagraphJcSafe(full, jc) : full;
+    out += docXml.slice(lastIndex, m.index) + replacement;
+    lastIndex = m.index + full.length;
+  }
+  out += docXml.slice(lastIndex);
+  return out;
+}
+
+function applyClinicalClosingAlignmentToDocxPath(docxPath) {
+  if (!docxPath || !fs.existsSync(docxPath)) return;
+  const off =
+    String(process.env.REPORT_ALIGN_CLOSING_BLOCK || 'true').toLowerCase() ===
+    'false';
+  if (off) return;
+
+  try {
+    const zip = new PizZip(fs.readFileSync(docxPath));
+    const docFile = zip.file('word/document.xml');
+    if (!docFile) return;
+    const before = docFile.asText();
+    const after = applyClinicalClosingAlignmentToDocXml(before);
+    if (after !== before) {
+      zip.file('word/document.xml', after);
+      fs.writeFileSync(docxPath, zip.generate({ type: 'nodebuffer' }));
+      logger.info('Applied REPORT_ALIGN closing jc to document.xml', {
+        file: path.basename(docxPath),
+      });
+    }
+  } catch (e) {
+    logger.warn(`applyClinicalClosingAlignment skipped: ${e.message}`);
+  }
+}
+
 /**
  * Một số template fallback (vd. XrayResultTemplate.doc) không có <<Result>>/<<Conclusion>>.
  * Aspose trên server tạo bookmark cuối document khi không tìm thấy placeholder — ta chèn đoạn chứa
@@ -828,6 +976,8 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
       );
     }
 
+    applyClinicalClosingAlignmentToDocxPath(renderedDocxPath);
+
     await convertWithLibreOffice('pdf', renderedDocxPath, tempDir);
     if (!fs.existsSync(basePdfPath)) {
       throw new Error(`LibreOffice produced no PDF: ${basePdfPath}`);
@@ -855,6 +1005,7 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
     });
     docPlain.render(buildRenderPayload(record, plainTokens));
     fs.writeFileSync(renderedDocxPath, docPlain.getZip().generate({ type: 'nodebuffer' }));
+    applyClinicalClosingAlignmentToDocxPath(renderedDocxPath);
     await convertWithLibreOffice('pdf', renderedDocxPath, tempDir);
     if (!fs.existsSync(basePdfPath)) {
       throw new Error(`LibreOffice produced no PDF after fallback: ${basePdfPath}`);
