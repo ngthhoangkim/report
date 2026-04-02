@@ -263,6 +263,8 @@ function lineLooksLikeDoctorSignature(line) {
 function classifyParagraphJc(plainNorm, linesFromBr) {
   const doctorRight =
     String(process.env.REPORT_ALIGN_DOCTOR_RIGHT || 'true').toLowerCase() !== 'false';
+  const dateRight =
+    String(process.env.REPORT_ALIGN_DATE_RIGHT || 'true').toLowerCase() !== 'false';
 
   if (doctorRight && linesFromBr && linesFromBr.length) {
     if (linesFromBr.some((ln) => lineLooksLikeDoctorSignature(ln))) {
@@ -271,6 +273,10 @@ function classifyParagraphJc(plainNorm, linesFromBr) {
   }
 
   const t = plainNorm;
+  if (doctorRight && dateRight && t && /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(String(t).trim())) {
+    return 'right';
+  }
+
   if (doctorRight && t) {
     if (DOCTOR_LINE_RE.test(t)) {
       return 'right';
@@ -810,6 +816,44 @@ function shouldSkipProgrammaticLogo(templatePath, pathologyType) {
   return false;
 }
 
+/**
+ * Một số template gõ nhầm `___IMG_1___` (ba gạch); code chỉ thay `__IMG_1__`.
+ * Chuẩn hóa trong document/header/footer trước khi embed và in PDF.
+ */
+function normalizeImagePlaceholderTokensInDocx(docxPath) {
+  if (!docxPath || !fs.existsSync(docxPath)) return;
+  if (String(process.env.REPORT_NORMALIZE_IMG_TOKENS || 'true').toLowerCase() === 'false') {
+    return;
+  }
+  try {
+    const zip = new PizZip(fs.readFileSync(docxPath));
+    let changed = false;
+    for (const name of Object.keys(zip.files)) {
+      const entry = zip.files[name];
+      if (!entry || entry.dir) continue;
+      const n = name.replace(/\\/g, '/');
+      if (
+        n !== 'word/document.xml' &&
+        !/^word\/header\d+\.xml$/i.test(n) &&
+        !/^word\/footer\d+\.xml$/i.test(n)
+      ) {
+        continue;
+      }
+      let xml = zip.file(name).asText();
+      const patched = xml.replace(/___IMG_(\d+)___/g, '__IMG_$1__');
+      if (patched !== xml) {
+        zip.file(name, patched);
+        changed = true;
+      }
+    }
+    if (changed) {
+      fs.writeFileSync(docxPath, zip.generate({ type: 'nodebuffer' }));
+    }
+  } catch (e) {
+    logger.warn(`normalizeImagePlaceholderTokensInDocx skipped: ${e.message}`);
+  }
+}
+
 async function embedImagesIntoDocx(renderedDocxPath, tokenToImagePath) {
   const zip = new PizZip(fs.readFileSync(renderedDocxPath));
   const docXmlFile = zip.file('word/document.xml');
@@ -1064,6 +1108,7 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
   const baseName = `rendered_${record.imagingResultId}_${segmentIndex}`;
   const renderedDocxPath = path.join(tempDir, `${baseName}.docx`);
   fs.writeFileSync(renderedDocxPath, doc.getZip().generate({ type: 'nodebuffer' }));
+  normalizeImagePlaceholderTokensInDocx(renderedDocxPath);
 
   const tokenToRtf = {};
   if (resultRtf) tokenToRtf.__RTF_RESULT__ = resultRtf;
@@ -1113,6 +1158,7 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
     });
     docPlain.render(buildRenderPayload(record, plainTokens));
     fs.writeFileSync(renderedDocxPath, docPlain.getZip().generate({ type: 'nodebuffer' }));
+    normalizeImagePlaceholderTokensInDocx(renderedDocxPath);
     applyClinicalClosingAlignmentToDocxPath(renderedDocxPath);
     await convertWithLibreOffice('pdf', renderedDocxPath, tempDir);
     if (!fs.existsSync(basePdfPath)) {
@@ -1127,6 +1173,11 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
     const emb = await embedImagesIntoDocx(renderedDocxPath, tokenToImagePath);
     embeddedCount = emb.embedded || 0;
     embeddedPaths = emb.embeddedPaths || [];
+    if (imageFiles.length > 0 && embeddedCount < imageFiles.length) {
+      logger.warn(
+        `Chỉ embed ${embeddedCount}/${imageFiles.length} ảnh (file thiếu, hoặc placeholder không khớp <<ImageN>> / __IMG_n__) — ImagingResultId=${record.imagingResultId}`,
+      );
+    }
   } catch (e) {
     logger.warn(`Embed images into docx failed, will append pages: ${e.message}`);
   }
