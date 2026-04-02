@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "scan-templates-logo": "node scripts/scanTemplatesForBuiltInLogo.js"
+    "scan-templates-logo": "node scripts/scanTemplatesForBuiltInLogo.js",
+    "backfill": "node scripts/backfillGenerateAndUpload.js"
   },
   "keywords": [
     "report",

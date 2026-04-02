@@ -128,6 +128,19 @@ function paragraphPlainText(paraXml) {
   return text;
 }
 
+function paragraphPlainTextWithLineBreaks(paraXml) {
+  const normalized = String(paraXml || '')
+    .replace(/<w:br\b[^>]*\/?>/gi, '\n')
+    .replace(/<w:cr\b[^>]*\/?>/gi, '\n');
+  let text = '';
+  const re = /<w:t[^>]*>([\s\S]*?)<\/w:t>/g;
+  let m;
+  while ((m = re.exec(normalized)) !== null) {
+    text += decodeXmlEntities(m[1]);
+  }
+  return text;
+}
+
 function docContainsTokenInParagraphs(docXml, token) {
   if (!token) return false;
   if (docXml.includes(token)) return true;
@@ -225,8 +238,35 @@ function isClosingHeadingPattern(plainNorm, a) {
   return false;
 }
 
-function classifyParagraphJc(plainNorm) {
+const DOCTOR_LINE_RE =
+  /^(BS\.|Bs\.|BÁC\s*SĨ|Bác\s+sĩ|PGS[\s.]|P\.GS\.|TS[\s.]|ThS[\s.]|GS[\s.]|CK[\s.]*I\.|CKI\.)\b/i;
+
+function lineLooksLikeDoctorSignature(line) {
+  const x = String(line || '').trim();
+  if (!x) return false;
+  return DOCTOR_LINE_RE.test(x);
+}
+
+function classifyParagraphJc(plainNorm, linesFromBr) {
+  const doctorRight =
+    String(process.env.REPORT_ALIGN_DOCTOR_RIGHT || 'true').toLowerCase() !== 'false';
+
+  if (doctorRight && linesFromBr && linesFromBr.length) {
+    if (linesFromBr.some((ln) => lineLooksLikeDoctorSignature(ln))) {
+      return 'right';
+    }
+  }
+
   const t = plainNorm;
+  if (doctorRight && t) {
+    if (DOCTOR_LINE_RE.test(t)) {
+      return 'right';
+    }
+    if (t.length < 400 && /\d{1,2}\/\d{1,2}\/\d{4}\s+BS\./i.test(t)) {
+      return 'right';
+    }
+  }
+
   if (!t) return null;
   if (t.length > 220) return null;
 
@@ -236,16 +276,6 @@ function classifyParagraphJc(plainNorm) {
     return headingJc;
   }
 
-  const doctorRight =
-    String(process.env.REPORT_ALIGN_DOCTOR_RIGHT || 'true').toLowerCase() !== 'false';
-  if (
-    doctorRight &&
-    /^(BS\.|Bs\.|BÁC\s*SĨ|Bác\s+sĩ|PGS[\s.]|P\.GS\.|TS[\s.]|ThS[\s.]|GS[\s.]|CK[\s.]*I\.|CKI\.)\b/i.test(
-      t,
-    )
-  ) {
-    return 'right';
-  }
   return null;
 }
 
@@ -284,8 +314,15 @@ function applyClinicalClosingAlignmentToDocXml(docXml) {
   let m;
   while ((m = OOXML_PARA_REGEX.exec(docXml)) !== null) {
     const full = m[0];
-    const plain = normalizeParaTextForAlignment(paragraphPlainText(full));
-    const jc = classifyParagraphJc(plain);
+    const withBreaks = paragraphPlainTextWithLineBreaks(full);
+    const linesFromBr = withBreaks
+      .split(/\r?\n/)
+      .map((ln) => ln.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+    const plain = normalizeParaTextForAlignment(
+      linesFromBr.length ? linesFromBr.join(' ') : paragraphPlainText(full),
+    );
+    const jc = classifyParagraphJc(plain, linesFromBr);
     const replacement = jc ? setParagraphJcSafe(full, jc) : full;
     out += docXml.slice(lastIndex, m.index) + replacement;
     lastIndex = m.index + full.length;
@@ -1029,6 +1066,7 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
   let pdfBaseForAppend = basePdfPath;
   if (embeddedCount > 0) {
     try {
+      applyClinicalClosingAlignmentToDocxPath(renderedDocxPath);
       await convertWithLibreOffice('pdf', renderedDocxPath, tempDir);
       if (!fs.existsSync(basePdfPath)) {
         throw new Error(`LibreOffice produced no PDF: ${basePdfPath}`);

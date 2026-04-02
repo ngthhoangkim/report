@@ -189,10 +189,35 @@ async function getLatestPacsInfoForSession(fileNum, sessionId) {
   })).filter((r) => r.requestId != null);
 }
 
+/**
+ * Danh sách phiên (FileNum + SessionId) có ít nhất một CN_ImagingResult trong khoảng CreatedDate.
+ * Dùng cho backfill theo tháng / năm.
+ */
+async function getDistinctSessionsCreatedBetween(fromDate, toDate) {
+  const rows = await db.executeQuery(
+    `
+    SELECT DISTINCT v.FileNum, v.SessionId
+    FROM dbo.CN_ImagingResult r
+    INNER JOIN dbo.ViewImagingResult v ON v.Id = r.Id
+    WHERE r.DeletedDate IS NULL
+      AND r.CreatedDate >= @fromDate
+      AND r.CreatedDate < @toDate
+    `,
+    { fromDate, toDate },
+  );
+  return rows
+    .map((r) => ({
+      fileNum: r.FileNum != null ? String(r.FileNum) : '',
+      sessionId: r.SessionId != null ? Number(r.SessionId) : null,
+    }))
+    .filter((r) => r.fileNum && r.sessionId != null && !Number.isNaN(r.sessionId));
+}
+
 module.exports = {
   getReportDataListByFileNumAndSessionId,
   getLatestPacsInfoForSession,
   getPrintedImageFilenames,
+  getDistinctSessionsCreatedBetween,
   /**
    * Polling: lấy danh sách session có imaging result cập nhật mới hơn checkpoint.
    * @returns {Array<{fileNum:string,sessionId:number,imagingResultId:number,updatedAt:Date}>}
