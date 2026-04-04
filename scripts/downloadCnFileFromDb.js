@@ -10,6 +10,9 @@
  *   npm run download-cn-file -- 26003528 844466 --out=./output/cn_files_zip
  *
  * Cần `.env` kết nối SQL giống app.
+ *
+ * CN_FILES join CR_SubSession / CR_Session / CR_Patient. SessionId khớp CR_Session.Id hoặc CR_SubSession.Id (OR).
+ * 0 dòng: script tự in khối debug (hoặc thêm --debug).
  */
 require('dotenv').config();
 
@@ -22,6 +25,7 @@ const { resolveExistingFileInDir } = require('../src/utils/imageSourceResolve');
 const {
   guessStoredPathFromRow,
   getCnFilesByFileNumAndSessionId,
+  debugCnFilesLookup,
   PATH_COLUMN_CANDIDATES,
 } = require('../src/repositories/cnFilesRepository');
 
@@ -34,6 +38,7 @@ function parseArgs(argv) {
     else if (a.startsWith('--sessionId=')) out.sessionId = a.slice('--sessionId='.length);
     else if (a.startsWith('--sessionid=')) out.sessionId = a.slice('--sessionid='.length);
     else if (a.startsWith('--out=')) out.out = a.slice('--out='.length);
+    else if (a === '--debug') out.debug = true;
     else if (!a.startsWith('--') && out.fileNum == null) out.fileNum = a;
     else if (!a.startsWith('--') && out.sessionId == null) out.sessionId = a;
   }
@@ -51,6 +56,8 @@ function usageAndExit(code = 1) {
       '',
       'Mặc định --out: ./output/cn_files_zip',
       'PATHS_*: PATHS_SOURCE_IMAGE_DIR, PATHS_FALLBACK_IMAGE_DIR, PATHS_LOCAL_IMAGE_DIR',
+      '  --debug  (luôn in bảng chẩn đoán SQL)',
+      'CN_FILES_SESSION_ID_MATCHES=cr_session | subsession (mặc định: OR cả hai Id)',
     ].join('\n'),
   );
   process.exit(code);
@@ -130,8 +137,20 @@ async function main() {
       `CN_FILES: ${rows.length} row(s) FileNum=${fileNum} SessionId=${sid} (path columns: ${PATH_COLUMN_CANDIDATES.join(', ')})`,
     );
 
-    if (rows.length === 0) {
-      process.exit(2);
+    if (rows.length === 0 || parsed.debug) {
+      const diag = await debugCnFilesLookup(String(fileNum), sid);
+      // eslint-disable-next-line no-console
+      console.log(
+        '--- debug CN_FILES / phiên (0 dòng hoặc --debug) ---\n',
+        JSON.stringify(diag, null, 2),
+      );
+      if (rows.length === 0) {
+        // eslint-disable-next-line no-console
+        console.log(
+          '\nGợi ý: nếu có dòng "cnFilesTopForPatientFileNum" nhưng session không khớp, dùng SubSessionId/CrSessionId đúng làm SessionId; hoặc kiểm tra DeletedDate trên CN_FILES / CR_SubSession.',
+        );
+        process.exit(2);
+      }
     }
 
     ensureDirectoryExists(outDir);
@@ -161,7 +180,7 @@ async function main() {
       }
 
       const baseName = path.basename(src);
-      const rowId = row.Id != null ? row.Id : row.id;
+      const rowId = row.ID != null ? row.ID : row.Id != null ? row.Id : row.id;
       const destZip = uniqueDestPath(outDir, baseName, rowId);
       fs.copyFileSync(src, destZip);
       copied += 1;
