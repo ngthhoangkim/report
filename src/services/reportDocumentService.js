@@ -33,7 +33,13 @@ function buildDoctorLabel(record) {
 
 function str(v) {
   if (v === undefined || v === null) return '';
-  return String(v);
+  let s = String(v);
+  try {
+    if (typeof s.normalize === 'function') s = s.normalize('NFC');
+  } catch (_) {
+    /* ignore */
+  }
+  return s;
 }
 
 /** Giảm block newline/spaces thừa từ DB khi render plain vào template (không đụng token RTF/ảnh). */
@@ -56,10 +62,13 @@ function strReportField(v) {
  */
 function buildRenderPayload(record, rtfTokens) {
   const IMAGE_KEYS_MAX = 200;
+  const ageRaw = str(calcAge(record.dob, record.ngayKham));
+  /** Một số template dính <<PatientName>><<Age>> không có khoảng — thêm space đầu tuổi. */
+  const ageSpaced = ageRaw ? ` ${ageRaw}` : '';
   const payload = {
     FileNm: str(record.fileNum || record.itemNum),
     PatientName: str(record.patientName),
-    Age: str(calcAge(record.dob, record.ngayKham)),
+    Age: ageSpaced,
     Gender: str(record.gender),
     Diagnosis: strReportField(record.conclusion),
     ReferDoctor: str(record.requestedDoctor),
@@ -1066,6 +1075,41 @@ async function embedImagesIntoDocx(renderedDocxPath, tokenToImagePath) {
   return { embedded, embeddedPaths };
 }
 
+function cnFilesAttachKeywordMatch(record) {
+  const blob = `${record.templateFile || ''} ${record.pathologyType || ''} ${record.conclusion || ''}`.toLowerCase();
+  const raw =
+    process.env.REPORT_CN_FILES_ATTACH_KEYWORDS ||
+    'ecg,pap,điện tim,dien tim,electrocardiogram,rest-ecg,siêu âm mạch máu chi';
+  const keys = raw.split(/[,;|]/).map((s) => s.trim().toLowerCase()).filter(Boolean);
+  for (const k of keys) {
+    if (!k) continue;
+    if (blob.includes(k)) return true;
+    const nk = stripVnAccents(k);
+    const nb = stripVnAccents(blob);
+    if (nk && nb.includes(nk)) return true;
+  }
+  return false;
+}
+
+/**
+ * Ảnh từ CN_FILES (ZIP ECG/PAP) chỉ ghép vào segment phù hợp — không dán vào mọi báo cáo.
+ * REPORT_CN_FILES_ATTACH_MODE: last | match | last_or_match | all | never
+ */
+function shouldUseCnFilesMediaForSegment(ctx, record, segmentIndex) {
+  const mode = String(process.env.REPORT_CN_FILES_ATTACH_MODE || 'last').toLowerCase();
+  if (mode === 'never' || mode === 'off' || mode === 'false') return false;
+  const total = Math.max(1, Number(ctx.reportSegmentCount) || 1);
+  const idx = Number(segmentIndex);
+  if (mode === 'all') return true;
+  if (mode === 'match' || mode === 'keywords' || mode === 'ecg_pap') {
+    return cnFilesAttachKeywordMatch(record);
+  }
+  if (mode === 'last_or_match') {
+    return idx === total - 1 || cnFilesAttachKeywordMatch(record);
+  }
+  return idx === total - 1;
+}
+
 /**
  * One imaging record → one PDF buffer, hoặc null nếu không có template trên disk.
  */
@@ -1094,8 +1138,9 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
 
   const printedNames = await getPrintedImageFilenames(record.imagingResultId);
   const cnPool = Array.isArray(ctx.cnFilesMediaPaths) ? ctx.cnFilesMediaPaths : [];
+  const useCnFilesThisSegment = shouldUseCnFilesMediaForSegment(ctx, record, segmentIndex);
   function combinedMediaPool() {
-    return extractedFiles.concat(cnPool);
+    return extractedFiles.concat(useCnFilesThisSegment ? cnPool : []);
   }
   function findMediaInPool(pool, wantFile, wantNoExt) {
     return pool.find((f) => {
@@ -1159,8 +1204,9 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
   }
 
   const appendCnOrphans =
+    useCnFilesThisSegment &&
     String(process.env.REPORT_APPEND_UNMATCHED_CN_FILES_IMAGES || 'true').toLowerCase() !==
-    'false';
+      'false';
   if (appendCnOrphans && cnPool.length > 0) {
     let appended = 0;
     for (const p of cnPool) {
@@ -1181,7 +1227,7 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
   }
 
   logger.info(
-    `Resolved ${imageFiles.length} image(s) for ImagingResultId=${record.imagingResultId} (printed rows=${printedNames.length}, CN_FILES pool=${cnPool.length})`,
+    `Resolved ${imageFiles.length} image(s) for ImagingResultId=${record.imagingResultId} (printed=${printedNames.length}, CN_FILES pool=${cnPool.length}, useCnPoolThisSegment=${useCnFilesThisSegment})`,
   );
 
   const resultRtf = decompressToString(record.resultData);

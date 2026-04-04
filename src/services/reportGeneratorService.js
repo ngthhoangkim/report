@@ -141,6 +141,7 @@ async function generatePdfByFileNumAndSessionId(fileNum, sessionId, options = {}
       templateSelector,
       templatesDir: paths.templates,
       cnFilesMediaPaths,
+      reportSegmentCount: records.length,
     };
 
     const segmentBuffers = [];
