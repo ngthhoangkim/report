@@ -14,14 +14,28 @@ const ANSI_CP_TO_ICONV = {
 
 /**
  * Giải nén gzip (hoặc buffer thô) rồi decode chuỗi RTF đúng bảng mã.
- * Nhiều RTF từ hệ VN dùng Windows-1258; gunzip + toString('utf8') sẽ làm hỏng tiếng Việt
- * và Word/LibreOffice xuất PDF ra ô / ?.
+ *
+ * Nhiều file RTF thực tế là UTF-8 hợp lệ nhưng header vẫn ghi \\ansicpg1258.
+ * Nếu ưu tiên iconv theo ansicpg trước → decode sai toàn bộ buffer → RTF hỏng,
+ * Word/LO không merge được và có thể in nguyên chuỗi {\\rtf1\\fonttbl... ra PDF.
+ *
+ * Thứ tự: UTF-8 strict + {\\rtf → trước; sau đó mới \\ansicpg / win1258.
  */
 function decodeRtfPayloadBytes(raw) {
   if (!raw || !raw.length) return '';
 
   if (String(process.env.RTF_FORCE_UTF8 || '').toLowerCase() === 'true') {
     return raw.toString('utf8');
+  }
+
+  let strictUtf8 = null;
+  try {
+    strictUtf8 = new TextDecoder('utf-8', { fatal: true }).decode(raw);
+  } catch {
+    strictUtf8 = null;
+  }
+  if (strictUtf8 != null && /\{\\rtf/i.test(strictUtf8)) {
+    return strictUtf8;
   }
 
   const headLen = Math.min(32768, raw.length);
@@ -42,16 +56,6 @@ function decodeRtfPayloadBytes(raw) {
         return s;
       }
     }
-  }
-
-  let strictUtf8 = null;
-  try {
-    strictUtf8 = new TextDecoder('utf-8', { fatal: true }).decode(raw);
-  } catch {
-    strictUtf8 = null;
-  }
-  if (strictUtf8 != null && /\{\\rtf/i.test(strictUtf8)) {
-    return strictUtf8;
   }
 
   if (String(process.env.RTF_TRY_WIN1258_FALLBACK || 'true').toLowerCase() !== 'false') {
