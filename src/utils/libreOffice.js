@@ -35,7 +35,21 @@ function getLibreOfficeBinary() {
   return 'soffice';
 }
 
+/**
+ * Biến môi trường cho mọi lần spawn `soffice`.
+ * PYTHONHOME / PYTHONPATH của hệ thống thường làm Python nhúng trong LibreOffice lỗi và in ra stderr:
+ * "Could not find platform independent libraries <prefix>" (lặp vài lần mỗi job).
+ */
+function getLibreOfficeSpawnEnv() {
+  const env = { ...process.env };
+  delete env.PYTHONHOME;
+  delete env.PYTHONPATH;
+  delete env.PYTHONSAFEPATH;
+  return env;
+}
+
 module.exports = {
   getLibreOfficeBinary,
+  getLibreOfficeSpawnEnv,
   MAC_SOFFICE,
 };

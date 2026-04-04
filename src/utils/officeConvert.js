@@ -4,7 +4,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
-const { getLibreOfficeBinary } = require('./libreOffice');
+const { getLibreOfficeBinary, getLibreOfficeSpawnEnv } = require('./libreOffice');
 const logger = require('./logger');
 
 const execFileAsync = promisify(execFile);
@@ -32,7 +32,10 @@ function shortErr(e, max = 220) {
 async function convertWithLibreOffice(mode, inputPath, outDir) {
   const bin = getLibreOfficeBinary();
   const args = ['--headless', '--convert-to', mode, '--outdir', outDir, inputPath];
-  await execFileAsync(bin, args, { maxBuffer: 50 * 1024 * 1024 });
+  await execFileAsync(bin, args, {
+    maxBuffer: 50 * 1024 * 1024,
+    env: getLibreOfficeSpawnEnv(),
+  });
 }
 
 /**

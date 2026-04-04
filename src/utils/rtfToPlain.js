@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
-const { getLibreOfficeBinary } = require('./libreOffice');
+const { getLibreOfficeBinary, getLibreOfficeSpawnEnv } = require('./libreOffice');
 
 function findBalancedBraceEnd(s, openIdx) {
   if (!s || openIdx < 0 || s[openIdx] !== '{') return -1;
@@ -126,6 +126,7 @@ function rtfToPlainTextLibreOffice(rtfText, tmpPrefix) {
     const bin = getLibreOfficeBinary();
     execFileSync(bin, ['--headless', '--convert-to', 'txt:Text', '--outdir', dir, rtfPath], {
       maxBuffer: 50 * 1024 * 1024,
+      env: getLibreOfficeSpawnEnv(),
     });
     const txtPath = path.join(dir, `${base}.txt`);
     if (fs.existsSync(txtPath)) {
