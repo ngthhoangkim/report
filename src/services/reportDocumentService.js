@@ -43,6 +43,25 @@ function str(v) {
   return s;
 }
 
+function reportLogRtfMetaEnabled() {
+  return String(process.env.REPORT_LOG_RTF_META || '').toLowerCase() === 'true';
+}
+
+function logRtfBlobMeta(label, rawBuffer, decodedString) {
+  if (!reportLogRtfMetaEnabled()) return;
+  const b = rawBuffer && Buffer.isBuffer(rawBuffer) ? rawBuffer : null;
+  const looksGzip = b && b.length >= 2 && b[0] === 0x1f && b[1] === 0x8b;
+  const s = decodedString == null ? '' : String(decodedString);
+  const preview = s.slice(0, 160).replace(/\s+/g, ' ').trim();
+  logger.info(`RTF blob ${label}`, {
+    gzipMagic: looksGzip,
+    rawBytes: b ? b.length : 0,
+    decodedLen: s.length,
+    startsWithRtf: /^\s*\{\\rtf/i.test(s),
+    preview,
+  });
+}
+
 /** Giảm block newline/spaces thừa từ DB khi render plain vào template (không đụng token RTF/ảnh). */
 function strReportField(v) {
   const s = str(v);
@@ -554,7 +573,12 @@ async function injectRtfIntoDocx(renderedDocxPath, tokenToRtf, tempDirForRtf) {
 
   for (const [token, rtfText] of Object.entries(tokenToRtf)) {
     if (!rtfText) continue;
-    if (!docContainsTokenInParagraphs(mainDocXml, token)) continue;
+    if (!docContainsTokenInParagraphs(mainDocXml, token)) {
+      if (reportLogRtfMetaEnabled()) {
+        logger.warn(`RTF inject skipped — token not found in document.xml: ${token}`);
+      }
+      continue;
+    }
 
     const rtfPath = path.join(tempDirForRtf, `${token}.rtf`);
     writeRtfFileForOffice(rtfPath, rtfText);
@@ -591,6 +615,12 @@ async function injectRtfIntoDocx(renderedDocxPath, tokenToRtf, tempDirForRtf) {
 
     // Replace paragraph containing token with paragraphs from converted rtf.
     mainDocXml = replaceParagraphContainingToken(mainDocXml, token, replacementInnerXml);
+    if (reportLogRtfMetaEnabled()) {
+      logger.info(`RTF inject merged token ${token}`, {
+        rtfChars: String(rtfText || '').length,
+        replacementParasApprox: (replacementInnerXml.match(/<w:p\b/g) || []).length,
+      });
+    }
   }
 
   renderedZip.file('word/document.xml', mainDocXml);
@@ -1234,6 +1264,9 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
   const resultRtf = decompressToString(record.resultData);
   const conclusionRtf = decompressToString(record.conclusionData);
   const suggestionRtf = decompressToString(record.suggestionData);
+  logRtfBlobMeta('ResultData', record.resultData, resultRtf);
+  logRtfBlobMeta('ConclusionData', record.conclusionData, conclusionRtf);
+  logRtfBlobMeta('SuggestionData', record.suggestionData, suggestionRtf);
 
   const hasBlobText =
     (resultRtf && String(resultRtf).trim()) ||
