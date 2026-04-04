@@ -3,6 +3,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 const { getLibreOfficeBinary, getLibreOfficeSpawnEnv } = require('./libreOffice');
+const { writeRtfFileForOffice } = require('./rtfFileWrite');
 
 function findBalancedBraceEnd(s, openIdx) {
   if (!s || openIdx < 0 || s[openIdx] !== '{') return -1;
@@ -94,7 +95,7 @@ function fallbackRtfToPlainText(rtfText) {
 function rtfToPlainTextTextutil(rtfText, tmpPrefix) {
   if (process.platform !== 'darwin') return null;
   const tmpRtfPath = `${tmpPrefix}.tmp.rtf`;
-  fs.writeFileSync(tmpRtfPath, rtfText, 'utf8');
+  writeRtfFileForOffice(tmpRtfPath, rtfText);
   try {
     const txt = execFileSync('textutil', ['-convert', 'txt', '-stdout', tmpRtfPath], {
       encoding: 'utf8',
@@ -122,7 +123,7 @@ function rtfToPlainTextLibreOffice(rtfText, tmpPrefix) {
   const base = 'rtfcontent';
   const rtfPath = path.join(dir, `${base}.rtf`);
   try {
-    fs.writeFileSync(rtfPath, rtfText, 'utf8');
+    writeRtfFileForOffice(rtfPath, rtfText);
     const bin = getLibreOfficeBinary();
     execFileSync(bin, ['--headless', '--convert-to', 'txt:Text', '--outdir', dir, rtfPath], {
       maxBuffer: 50 * 1024 * 1024,

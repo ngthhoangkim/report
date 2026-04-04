@@ -9,6 +9,7 @@ const { extractImagesFromArchiveOrRaw, ensureDirectoryExists } = require('../uti
 const { convertWithOffice } = require('../utils/officeConvert');
 const { rtfToPlainText } = require('../utils/rtfToPlain');
 const { mergeBasePdfWithImagePages } = require('../utils/pdfMerge');
+const { writeRtfFileForOffice } = require('../utils/rtfFileWrite');
 const { validateWordTemplateFile } = require('../utils/wordFileValidate');
 const { calcAge } = require('../utils/age');
 const { getPrintedImageFilenames } = require('../repositories/reportRepository');
@@ -556,7 +557,7 @@ async function injectRtfIntoDocx(renderedDocxPath, tokenToRtf, tempDirForRtf) {
     if (!docContainsTokenInParagraphs(mainDocXml, token)) continue;
 
     const rtfPath = path.join(tempDirForRtf, `${token}.rtf`);
-    fs.writeFileSync(rtfPath, rtfText, 'utf8');
+    writeRtfFileForOffice(rtfPath, rtfText);
 
     const outDir = path.join(tempDirForRtf, `rtf_${token}_docx`);
     ensureDirectoryExists(outDir);
