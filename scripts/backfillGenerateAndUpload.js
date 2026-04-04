@@ -31,7 +31,10 @@ const path = require('path');
 const { Blob } = require('buffer');
 const db = require('../src/config/database');
 const { getDistinctSessionsCreatedBetween } = require('../src/repositories/reportRepository');
-const { generatePdfByFileNumAndSessionId } = require('../src/services/reportGeneratorService');
+const {
+  generatePdfByFileNumAndSessionId,
+  resolveWriteOutputToDisk,
+} = require('../src/services/reportGeneratorService');
 const logger = require('../src/utils/logger');
 
 function parseEnvDays() {
@@ -96,12 +99,11 @@ function* monthWindows(from, to) {
   }
 }
 
-async function uploadPdfMultipart(filePath, baseUrl, prefix) {
+async function uploadPdfMultipartBuffer(buf, fileName, baseUrl, prefix) {
   const base = String(baseUrl || '').replace(/\/$/, '');
   if (!base) throw new Error('S3_UPLOAD_API_BASE is empty');
   const url = `${base}/api/v1/s3/upload-multiple`;
-  const buf = fs.readFileSync(filePath);
-  const name = path.basename(filePath);
+  const name = path.basename(fileName || 'report.pdf');
   const body = new FormData();
   body.append('prefix', prefix || 'khambenh/');
   body.append('files', new Blob([buf], { type: 'application/pdf' }), name);
@@ -116,6 +118,11 @@ async function uploadPdfMultipart(filePath, baseUrl, prefix) {
   } catch {
     return { raw: text };
   }
+}
+
+async function uploadPdfMultipart(filePath, baseUrl, prefix) {
+  const buf = fs.readFileSync(filePath);
+  return uploadPdfMultipartBuffer(buf, path.basename(filePath), baseUrl, prefix);
 }
 
 async function runPool(items, concurrency, fn) {
@@ -241,15 +248,33 @@ async function main() {
           return;
         }
 
-        const result = await generatePdfByFileNumAndSessionId(s.fileNum, s.sessionId);
+        const writesDisk = resolveWriteOutputToDisk({});
+        const result = await generatePdfByFileNumAndSessionId(s.fileNum, s.sessionId, {
+          returnPdfBuffer: args.upload && !writesDisk,
+        });
         generated += 1;
         logger.info('Generated', {
           fileNum: s.fileNum,
           sessionId: s.sessionId,
           filePath: result.filePath,
+          wroteToDisk: result.wroteToDisk,
         });
 
-        if (args.upload && result.filePath && fs.existsSync(result.filePath)) {
+        if (args.upload && result.pdfBuffer) {
+          const up = await uploadPdfMultipartBuffer(
+            result.pdfBuffer,
+            result.fileName,
+            uploadBase,
+            prefix,
+          );
+          uploaded += 1;
+          logger.info('Uploaded', {
+            fileNum: s.fileNum,
+            sessionId: s.sessionId,
+            fileName: result.fileName,
+            responseKeys: Array.isArray(up) ? up.length : Object.keys(up || {}),
+          });
+        } else if (args.upload && result.filePath && fs.existsSync(result.filePath)) {
           const up = await uploadPdfMultipart(result.filePath, uploadBase, prefix);
           uploaded += 1;
           logger.info('Uploaded', {

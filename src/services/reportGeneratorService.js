@@ -52,9 +52,19 @@ async function withJobLock(key, fn) {
   return next;
 }
 
+function resolveWriteOutputToDisk(options) {
+  if (options.writeOutput === true) return true;
+  if (options.writeOutput === false) return false;
+  const raw = process.env.REPORT_WRITE_OUTPUT_TO_DISK;
+  if (raw === undefined || raw === '') return true;
+  return String(raw).toLowerCase() !== 'false';
+}
+
 /**
  * @param {object} [options]
  * @param {string} [options.resultFileName] — tên nền file kết quả (không .pdf), override tự suy từ DB
+ * @param {boolean} [options.writeOutput] — true/false ép ghi hoặc không ghi ra PATHS_OUTPUT; bỏ qua thì dùng REPORT_WRITE_OUTPUT_TO_DISK (mặc định ghi)
+ * @param {boolean} [options.returnPdfBuffer] — khi không ghi đĩa: trả về `pdfBuffer` (Buffer) cho upload / tích hợp
  */
 async function generatePdfByFileNumAndSessionId(fileNum, sessionId, options = {}) {
   const key = jobKey(fileNum, sessionId);
@@ -202,28 +212,33 @@ async function generatePdfByFileNumAndSessionId(fileNum, sessionId, options = {}
       }
 
       const merged = await mergePdfBuffers(allBuffers);
-      ensureDirectoryExists(paths.output);
-      const finalPath = path.join(paths.output, finalName);
+      const writeDisk = resolveWriteOutputToDisk(options);
+      let finalPath = null;
+      if (writeDisk) {
+        ensureDirectoryExists(paths.output);
+        finalPath = path.join(paths.output, finalName);
 
-      if (fs.existsSync(finalPath)) {
-        try {
-          fs.unlinkSync(finalPath);
-        } catch (e) {
-          logger.warn(`Retry delete ${finalPath}: ${e.message}`);
-          await new Promise((r) => setTimeout(r, 100));
-          if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
+        if (fs.existsSync(finalPath)) {
+          try {
+            fs.unlinkSync(finalPath);
+          } catch (e) {
+            logger.warn(`Retry delete ${finalPath}: ${e.message}`);
+            await new Promise((r) => setTimeout(r, 100));
+            if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
+          }
         }
+
+        fs.writeFileSync(finalPath, merged);
       }
 
-      fs.writeFileSync(finalPath, merged);
-
-      return {
+      const out = {
         success: true,
         fileNum: String(fileNum),
         sessionId: Number(sessionId),
         resultFileName: pdfBase,
         filePath: finalPath,
         fileName: finalName,
+        wroteToDisk: writeDisk,
         segmentCount: segmentBuffers.length,
         skippedRecords: skipped,
         pacsRequestRows: pacsRows.length,
@@ -231,6 +246,10 @@ async function generatePdfByFileNumAndSessionId(fileNum, sessionId, options = {}
         pacsMergedUrls: pacsMergedFromUrls,
         pacsFetchErrors: pacsFetchErrors.length ? pacsFetchErrors : undefined,
       };
+      if (!writeDisk && options.returnPdfBuffer) {
+        out.pdfBuffer = merged;
+      }
+      return out;
     } finally {
       cleanupDirectory(tempRoot);
     }
@@ -266,4 +285,5 @@ function getOrCreateTemplateSelector(paths) {
 module.exports = {
   generatePdfByFileNumAndSessionId,
   resolveOutputPdfBaseName,
+  resolveWriteOutputToDisk,
 };
