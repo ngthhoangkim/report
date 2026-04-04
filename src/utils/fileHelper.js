@@ -68,6 +68,23 @@ function extractImagesFromZip(zipPath, extractToDirectory) {
 }
 
 /**
+ * Giải nén toàn bộ ZIP (có hỗ trợ mật khẩu ZipCrypto thông qua adm-zip).
+ * ZIP mã hóa AES có thể cần công cụ khác (7zip/unzip).
+ * @param {string} zipPath
+ * @param {string} extractToDirectory
+ * @param {string} [password]
+ */
+function extractAllZipToDirectory(zipPath, extractToDirectory, password) {
+  if (!fs.existsSync(zipPath)) {
+    throw new Error(`ZIP file not found: ${zipPath}`);
+  }
+  ensureDirectoryExists(extractToDirectory);
+  const zip = new AdmZip(zipPath);
+  const pass = password != null && String(password) !== '' ? String(password) : undefined;
+  zip.extractAllTo(extractToDirectory, true, false, pass);
+}
+
+/**
  * File không đuôi nhưng là ZIP (PK) → giải nén ảnh.
  * Một file JPEG/PNG đơn (không ZIP) → trả về một đường dẫn ảnh trong extractDir.
  */
@@ -129,6 +146,7 @@ function cleanupDirectory(directoryPath) {
 module.exports = {
   ensureDirectoryExists,
   extractImagesFromZip,
+  extractAllZipToDirectory,
   extractImagesFromArchiveOrRaw,
   listFilesRecursively,
   cleanupDirectory,

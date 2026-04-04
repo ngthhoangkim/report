@@ -207,12 +207,15 @@ function normalizeParaTextForAlignment(plain) {
  * - REPORT_CLOSING_HEADING_JC=preserve|rtf (mặc định) — không đụng tiêu đề/ ngày.
  *   center | both | left — ép cùng một kiểu căn cho các dòng khớp mẫu (both = căn đều).
  * - REPORT_ALIGN_DOCTOR_RIGHT=false — không ép căn phải dòng BS.
+ * - REPORT_ALIGN_REFER_DOCTOR_LINES=true (mặc định) — ép căn PHẢI đoạn có nhãn
+ *   kiểu "Bác sĩ chỉ định" / "BS chỉ định" (<<ReferDoctor>>), không cần bật REPORT_ALIGN_CLOSING_BLOCK.
  */
 function stripVnAccents(s) {
   return String(s)
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase();
+    .toLowerCase()
+    .replace(/đ/g, 'd');
 }
 
 function closingHeadingJcFromEnv() {
@@ -256,7 +259,120 @@ function lineLooksLikeDoctorSignature(line) {
   return DOCTOR_LINE_RE.test(x);
 }
 
+/** Đoạn có nhãn bác sĩ / BS chỉ định (thường là <<ReferDoctor>> sau khi render). */
+function paragraphLooksLikeReferDoctorLabel(plainNorm, linesFromBr) {
+  const parts = linesFromBr.length ? linesFromBr : [plainNorm];
+  const joined = normalizeParaTextForAlignment(parts.join(' '));
+  if (!joined || joined.length > 420) return false;
+  const a = stripVnAccents(joined);
+  if (!/\bchi\s*dinh\b/.test(a)) return false;
+  if (/^(bs\.?|bac\s*si|bac\s*sy)\b/.test(a)) return true;
+  if (/\b(bs\.?|bac\s*si|bac\s*sy)\s+chi\s*dinh\b/.test(a)) return true;
+  if (/^(nguoi\s*chi\s*dinh|bac\s*si\s*chi\s*dinh)\b/.test(a)) return true;
+  return false;
+}
+
+function classifyReferDoctorParagraphJc(plainNorm, linesFromBr) {
+  const on =
+    String(process.env.REPORT_ALIGN_REFER_DOCTOR_LINES || 'true').toLowerCase() !== 'false';
+  if (!on) return null;
+  const doctorRight =
+    String(process.env.REPORT_ALIGN_DOCTOR_RIGHT || 'true').toLowerCase() !== 'false';
+  if (!doctorRight) return null;
+  if (!paragraphLooksLikeReferDoctorLabel(plainNorm, linesFromBr)) return null;
+  return 'right';
+}
+
+function applyReferDoctorAlignmentToDocXml(docXml) {
+  const off =
+    String(process.env.REPORT_ALIGN_REFER_DOCTOR_LINES || 'true').toLowerCase() === 'false';
+  if (off || !docXml) return docXml;
+
+  OOXML_PARA_REGEX.lastIndex = 0;
+  let out = '';
+  let lastIndex = 0;
+  let m;
+  while ((m = OOXML_PARA_REGEX.exec(docXml)) !== null) {
+    const full = m[0];
+    const withBreaks = paragraphPlainTextWithLineBreaks(full);
+    const linesFromBr = withBreaks
+      .split(/\r?\n/)
+      .map((ln) => ln.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+    const plain = normalizeParaTextForAlignment(
+      linesFromBr.length ? linesFromBr.join(' ') : paragraphPlainText(full),
+    );
+    const jc = classifyReferDoctorParagraphJc(plain, linesFromBr);
+    const replacement = jc ? setParagraphJcSafe(full, jc) : full;
+    out += docXml.slice(lastIndex, m.index) + replacement;
+    lastIndex = m.index + full.length;
+  }
+  out += docXml.slice(lastIndex);
+  return out;
+}
+
+function applyReferDoctorAlignmentToDocxPath(docxPath) {
+  if (!docxPath || !fs.existsSync(docxPath)) return;
+  const off =
+    String(process.env.REPORT_ALIGN_REFER_DOCTOR_LINES || 'true').toLowerCase() === 'false';
+  if (off) return;
+
+  try {
+    const zip = new PizZip(fs.readFileSync(docxPath));
+    const docFile = zip.file('word/document.xml');
+    if (!docFile) return;
+    const before = docFile.asText();
+    const after = applyReferDoctorAlignmentToDocXml(before);
+    if (after !== before) {
+      zip.file('word/document.xml', after);
+      fs.writeFileSync(docxPath, zip.generate({ type: 'nodebuffer' }));
+      logger.info('Applied REPORT_ALIGN_REFER_DOCTOR_LINES (jc=right) to document.xml', {
+        file: path.basename(docxPath),
+      });
+    }
+  } catch (e) {
+    logger.warn(`applyReferDoctorAlignment skipped: ${e.message}`);
+  }
+}
+
+function stripImagePlaceholderTokensInDocXml(docXml, tokens) {
+  let out = docXml;
+  for (const token of tokens || []) {
+    if (!token) continue;
+    // remove whole paragraph that contains token (covers split-runs case)
+    out = replaceParagraphContainingToken(
+      out,
+      token,
+      '<w:p><w:r><w:t xml:space="preserve"></w:t></w:r></w:p>',
+    );
+  }
+  return out;
+}
+
+function stripImagePlaceholderTokensInDocxPath(docxPath, tokens) {
+  if (!docxPath || !fs.existsSync(docxPath) || !tokens || !tokens.length) return;
+  try {
+    const zip = new PizZip(fs.readFileSync(docxPath));
+    const docFile = zip.file('word/document.xml');
+    if (!docFile) return;
+    const before = docFile.asText();
+    const after = stripImagePlaceholderTokensInDocXml(before, tokens);
+    if (after !== before) {
+      zip.file('word/document.xml', after);
+      fs.writeFileSync(docxPath, zip.generate({ type: 'nodebuffer' }));
+      logger.info('Stripped __IMG_* placeholder tokens from document.xml', {
+        file: path.basename(docxPath),
+      });
+    }
+  } catch (e) {
+    logger.warn(`stripImagePlaceholderTokens skipped: ${e.message}`);
+  }
+}
+
 function classifyParagraphJc(plainNorm, linesFromBr) {
+  const referJc = classifyReferDoctorParagraphJc(plainNorm, linesFromBr);
+  if (referJc) return referJc;
+
   const doctorRight =
     String(process.env.REPORT_ALIGN_DOCTOR_RIGHT || 'true').toLowerCase() !== 'false';
   const dateRight =
@@ -1177,6 +1293,7 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
       );
     }
 
+    applyReferDoctorAlignmentToDocxPath(renderedDocxPath);
     applyClinicalClosingAlignmentToDocxPath(renderedDocxPath);
 
     await convertWithLibreOffice('pdf', renderedDocxPath, tempDir);
@@ -1207,6 +1324,7 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
     docPlain.render(buildRenderPayload(record, plainTokens));
     fs.writeFileSync(renderedDocxPath, docPlain.getZip().generate({ type: 'nodebuffer' }));
     normalizeImagePlaceholderTokensInDocx(renderedDocxPath);
+    applyReferDoctorAlignmentToDocxPath(renderedDocxPath);
     applyClinicalClosingAlignmentToDocxPath(renderedDocxPath);
     await convertWithLibreOffice('pdf', renderedDocxPath, tempDir);
     if (!fs.existsSync(basePdfPath)) {
@@ -1236,6 +1354,7 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
   let pdfBaseForAppend = basePdfPath;
   if (embeddedCount > 0) {
     try {
+      applyReferDoctorAlignmentToDocxPath(renderedDocxPath);
       applyClinicalClosingAlignmentToDocxPath(renderedDocxPath);
       await convertWithLibreOffice('pdf', renderedDocxPath, tempDir);
       if (!fs.existsSync(basePdfPath)) {
@@ -1248,6 +1367,23 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
       );
       await mergeBasePdfWithImagePages(basePdfPath, imageFiles, finalPdfPath);
       return fs.readFileSync(finalPdfPath);
+    }
+  }
+
+  // If we are going to append images as pages (no embedded images), remove __IMG_* tokens from the text PDF.
+  // This avoids PDFs showing raw tokens like "__IMG_1__" in the report body.
+  if (embeddedCount === 0 && remainingImages.length > 0) {
+    try {
+      const tokens = Object.keys(tokenToImagePath || {});
+      stripImagePlaceholderTokensInDocxPath(renderedDocxPath, tokens);
+      applyReferDoctorAlignmentToDocxPath(renderedDocxPath);
+      applyClinicalClosingAlignmentToDocxPath(renderedDocxPath);
+      await convertWithLibreOffice('pdf', renderedDocxPath, tempDir);
+      if (fs.existsSync(basePdfPath)) {
+        pdfBaseForAppend = basePdfPath;
+      }
+    } catch (e) {
+      logger.warn(`Failed to strip __IMG_* tokens before appending pages: ${e?.message || String(e)}`);
     }
   }
 
@@ -1265,4 +1401,8 @@ module.exports = {
   renderRecordToPdf,
   buildRenderPayload,
   insertLogoIntoDocxIfExists,
+  stripImagePlaceholderTokensInDocXml,
+  stripImagePlaceholderTokensInDocxPath,
+  paragraphLooksLikeReferDoctorLabel,
+  classifyReferDoctorParagraphJc,
 };

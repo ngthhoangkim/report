@@ -1,14 +1,19 @@
 /**
- * Test end-to-end report generation (DB -> DOCX -> PDF output).
+ * Test end-to-end report generation (DB -> DOCX -> PDF output) với FileNum + SessionId cụ thể.
  *
  * Usage:
+ *   npm run test:report -- 26003528 844466
+ *   npm run test:report -- --fileNum=26003528 --sessionId=844466
+ *   node scripts/testGenerateReport.js 26003528 844466
  *   node scripts/testGenerateReport.js --fileNum=15084356 --sessionId=799593
- *   node scripts/testGenerateReport.js 15084356 799593
+ *
+ * Optional:
+ *   npm run test:report -- 26003528 844466 --resultFileName=my_debug_name
  *
  * Notes:
- * - Uses the same .env DB config as the app.
- * - Does NOT start the HTTP server.
- * - Automation is not started here.
+ * - Cần `.env` kết nối SQL Server giống app.
+ * - Không bật HTTP server / automation.
+ * - `npm test` chỉ chạy unit test; test theo hồ sơ thật dùng `npm run test:report -- ...`.
  */
 require('dotenv').config();
 
@@ -19,7 +24,8 @@ const { generatePdfByFileNumAndSessionId } = require('../src/services/reportGene
 function parseArgs(argv) {
   const out = {};
   for (const a of argv) {
-    if (a.startsWith('--fileNum=')) out.fileNum = a.slice('--fileNum='.length);
+    if (a === '--help' || a === '-h') out.help = true;
+    else if (a.startsWith('--fileNum=')) out.fileNum = a.slice('--fileNum='.length);
     else if (a.startsWith('--filenum=')) out.fileNum = a.slice('--filenum='.length);
     else if (a.startsWith('--sessionId=')) out.sessionId = a.slice('--sessionId='.length);
     else if (a.startsWith('--sessionid=')) out.sessionId = a.slice('--sessionid='.length);
@@ -35,12 +41,17 @@ function usageAndExit(code = 1) {
   // eslint-disable-next-line no-console
   console.log(
     [
+      'Generate PDF từ DB theo FileNum + SessionId (test thủ công / debug).',
+      '',
       'Usage:',
-      '  node scripts/testGenerateReport.js --fileNum=15084356 --sessionId=799593',
-      '  node scripts/testGenerateReport.js 15084356 799593',
+      '  npm run test:report -- <fileNum> <sessionId>',
+      '  npm run test:report -- --fileNum=26003528 --sessionId=844466',
+      '  node scripts/testGenerateReport.js 26003528 844466',
       '',
       'Optional:',
       '  --resultFileName=custom_name_without_pdf',
+      '',
+      'Unit test (không cần DB): npm test',
     ].join('\n'),
   );
   process.exit(code);
@@ -48,7 +59,9 @@ function usageAndExit(code = 1) {
 
 async function main() {
   const startedAt = Date.now();
-  const { fileNum, sessionId, resultFileName } = parseArgs(process.argv.slice(2));
+  const parsed = parseArgs(process.argv.slice(2));
+  if (parsed.help) usageAndExit(0);
+  const { fileNum, sessionId, resultFileName } = parsed;
   if (!fileNum || sessionId == null || String(sessionId).trim() === '') usageAndExit(1);
 
   const sid = Number(sessionId);

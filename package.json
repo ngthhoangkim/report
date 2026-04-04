@@ -4,10 +4,13 @@
   "description": "Automatic Medical Report Generator with SQL Server Polling",
   "main": "src/index.js",
   "scripts": {
+    "test": "node --test test/**/*.test.js",
+    "test:report": "node scripts/testGenerateReport.js",
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "scan-templates-logo": "node scripts/scanTemplatesForBuiltInLogo.js",
-    "backfill": "node scripts/backfillGenerateAndUpload.js"
+    "backfill": "node scripts/backfillGenerateAndUpload.js",
+    "download-cn-file": "node scripts/downloadCnFileFromDb.js"
   },
   "keywords": [
     "report",
