@@ -28,7 +28,14 @@ function decodeRtfPayloadBytes(raw) {
   const headLatin1 = raw.slice(0, headLen).toString('latin1');
   const cpMatch = /\\ansicpg(\d+)/i.exec(headLatin1);
   if (cpMatch) {
-    const enc = ANSI_CP_TO_ICONV[Number(cpMatch[1])];
+    const cp = Number(cpMatch[1]);
+    if (cp === 65001) {
+      const s = raw.toString('utf8');
+      if (/\{\\rtf/i.test(s)) {
+        return s;
+      }
+    }
+    const enc = ANSI_CP_TO_ICONV[cp];
     if (enc && iconv.encodingExists(enc)) {
       const s = iconv.decode(raw, enc);
       if (/\{\\rtf/i.test(s)) {
