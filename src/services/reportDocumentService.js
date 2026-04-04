@@ -1158,8 +1158,30 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
     }
   }
 
+  const appendCnOrphans =
+    String(process.env.REPORT_APPEND_UNMATCHED_CN_FILES_IMAGES || 'true').toLowerCase() !==
+    'false';
+  if (appendCnOrphans && cnPool.length > 0) {
+    let appended = 0;
+    for (const p of cnPool) {
+      const rp = path.resolve(p);
+      if (!fs.existsSync(rp)) continue;
+      const low = rp.toLowerCase();
+      if (!low.endsWith('.jpg') && !low.endsWith('.jpeg') && !low.endsWith('.png')) continue;
+      if (imageFilesSet.has(rp)) continue;
+      imageFilesSet.add(rp);
+      imageFiles.push(rp);
+      appended += 1;
+    }
+    if (appended > 0) {
+      logger.info(
+        `CN_FILES: appended ${appended} image(s) not listed in Printed (ImagingResultId=${record.imagingResultId})`,
+      );
+    }
+  }
+
   logger.info(
-    `Resolved ${imageFiles.length}/${printedNames.length} image(s) for ImagingResultId=${record.imagingResultId}`,
+    `Resolved ${imageFiles.length} image(s) for ImagingResultId=${record.imagingResultId} (printed rows=${printedNames.length}, CN_FILES pool=${cnPool.length})`,
   );
 
   const resultRtf = decompressToString(record.resultData);

@@ -213,11 +213,37 @@ async function getDistinctSessionsCreatedBetween(fromDate, toDate) {
     .filter((r) => r.fileNum && r.sessionId != null && !Number.isNaN(r.sessionId));
 }
 
+/**
+ * Watermark mới nhất trên CN_ImagingResult (đặt checkpoint sau backfill lịch sử).
+ * @returns {Promise<{ lastImagingResultId: number, lastUpdatedAt: Date }|null>}
+ */
+async function getLatestImagingResultWatermark() {
+  const rows = await db.executeQuery(
+    `
+    SELECT TOP 1
+      r.Id AS ImagingResultId,
+      COALESCE(r.UpdatedDate, r.CreatedDate) AS UpdatedAt
+    FROM dbo.CN_ImagingResult r
+    WHERE r.DeletedDate IS NULL
+    ORDER BY COALESCE(r.UpdatedDate, r.CreatedDate) DESC, r.Id DESC
+    `,
+    {},
+  );
+  if (!rows.length) return null;
+  const id = rows[0].ImagingResultId != null ? Number(rows[0].ImagingResultId) : null;
+  if (id == null || Number.isNaN(id)) return null;
+  return {
+    lastImagingResultId: id,
+    lastUpdatedAt: rows[0].UpdatedAt,
+  };
+}
+
 module.exports = {
   getReportDataListByFileNumAndSessionId,
   getLatestPacsInfoForSession,
   getPrintedImageFilenames,
   getDistinctSessionsCreatedBetween,
+  getLatestImagingResultWatermark,
   /**
    * Polling: lấy danh sách session có imaging result cập nhật mới hơn checkpoint.
    * @returns {Array<{fileNum:string,sessionId:number,imagingResultId:number,updatedAt:Date}>}
