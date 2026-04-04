@@ -45,14 +45,16 @@ function isPngMagic(buf) {
 
 /**
  * Extract image entries from ZIP to directory (same extensions as C# FileHelper).
+ * @param {string} [password] — ZipCrypto (adm-zip); AES có thể không mở được.
  */
-function extractImagesFromZip(zipPath, extractToDirectory) {
+function extractImagesFromZip(zipPath, extractToDirectory, password) {
   if (!fs.existsSync(zipPath)) {
     throw new Error(`ZIP file not found: ${zipPath}`);
   }
   ensureDirectoryExists(extractToDirectory);
   const extractedFiles = [];
   const zip = new AdmZip(zipPath);
+  const pass = password != null && String(password) !== '' ? String(password) : undefined;
   const entries = zip.getEntries();
   for (const entry of entries) {
     if (entry.isDirectory) continue;
@@ -61,7 +63,8 @@ function extractImagesFromZip(zipPath, extractToDirectory) {
     const ext = path.extname(entryName).toLowerCase();
     if (!['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff'].includes(ext)) continue;
     const destinationPath = path.join(extractToDirectory, nameOnly);
-    fs.writeFileSync(destinationPath, entry.getData());
+    const data = pass ? entry.getData(pass) : entry.getData();
+    fs.writeFileSync(destinationPath, data);
     extractedFiles.push(destinationPath);
   }
   return extractedFiles;
@@ -87,8 +90,9 @@ function extractAllZipToDirectory(zipPath, extractToDirectory, password) {
 /**
  * File không đuôi nhưng là ZIP (PK) → giải nén ảnh.
  * Một file JPEG/PNG đơn (không ZIP) → trả về một đường dẫn ảnh trong extractDir.
+ * @param {string} [zipPassword] — chỉ áp dụng khi file là ZIP.
  */
-function extractImagesFromArchiveOrRaw(filePath, extractToDirectory) {
+function extractImagesFromArchiveOrRaw(filePath, extractToDirectory, zipPassword) {
   if (!fs.existsSync(filePath)) {
     throw new Error(`Media file not found: ${filePath}`);
   }
@@ -100,7 +104,7 @@ function extractImagesFromArchiveOrRaw(filePath, extractToDirectory) {
     );
   }
   if (isZipMagic(buf)) {
-    return extractImagesFromZip(filePath, extractToDirectory);
+    return extractImagesFromZip(filePath, extractToDirectory, zipPassword);
   }
   if (isJpegMagic(buf) || isPngMagic(buf)) {
     const base = path.basename(filePath);

@@ -12,8 +12,12 @@
  *
  * Notes:
  * - Cần `.env` kết nối SQL Server giống app.
+ * - ZIP từ dbo.CN_FILES có mật khẩu (PAP/ECG): đặt `CN_FILES_ZIP_PASSWORD` trong `.env` để bung ảnh khi `REPORT_MERGE_CN_FILES_MEDIA` bật (mặc định bật).
  * - Không bật HTTP server / automation.
  * - `npm test` chỉ chạy unit test; test theo hồ sơ thật dùng `npm run test:report -- ...`.
+ *
+ * Ví dụ đã dùng khi debug (đổi sang đúng hồ sơ trên DB của bạn):
+ *   npm run test:report -- 26003528 844466
  */
 require('dotenv').config();
 
@@ -50,6 +54,8 @@ function usageAndExit(code = 1) {
       '',
       'Optional:',
       '  --resultFileName=custom_name_without_pdf',
+      '',
+      '.env: CN_FILES_ZIP_PASSWORD=... (ZIP CN_FILES ZipCrypto); ví dụ phiên: 26003528 844466',
       '',
       'Unit test (không cần DB): npm test',
     ].join('\n'),

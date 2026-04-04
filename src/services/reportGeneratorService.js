@@ -12,6 +12,7 @@ const { fetchPdfBuffer } = require('../utils/fetchPdf');
 const { FileCopyHelper } = require('./fileCopyHelper');
 const { TemplateSelector } = require('./templateSelector');
 const { renderRecordToPdf } = require('./reportDocumentService');
+const { collectCnFilesSessionMedia } = require('./cnFilesMediaService');
 const { mergePdfBuffers } = require('../utils/pdfMerge');
 const { ensureDirectoryExists, cleanupDirectory } = require('../utils/fileHelper');
 
@@ -110,10 +111,36 @@ async function generatePdfByFileNumAndSessionId(fileNum, sessionId, options = {}
     );
     ensureDirectoryExists(tempRoot);
 
+    const cnFilesMediaDir = path.join(tempRoot, '_cn_files_session');
+    ensureDirectoryExists(cnFilesMediaDir);
+    let cnFilesMediaPaths = [];
+    const mergeCnFilesMedia =
+      String(process.env.REPORT_MERGE_CN_FILES_MEDIA || 'true').toLowerCase() !== 'false';
+    if (mergeCnFilesMedia) {
+      try {
+        cnFilesMediaPaths = await collectCnFilesSessionMedia(
+          fileCopyHelper,
+          fileNum,
+          sessionId,
+          cnFilesMediaDir,
+        );
+        if (cnFilesMediaPaths.length > 0) {
+          logger.info('CN_FILES session media attached to report job', {
+            pathCount: cnFilesMediaPaths.length,
+            fileNum,
+            sessionId,
+          });
+        }
+      } catch (e) {
+        logger.warn(`collectCnFilesSessionMedia failed: ${e.message}`);
+      }
+    }
+
     const ctx = {
       fileCopyHelper,
       templateSelector,
       templatesDir: paths.templates,
+      cnFilesMediaPaths,
     };
 
     const segmentBuffers = [];

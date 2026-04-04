@@ -1093,6 +1093,19 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
   }
 
   const printedNames = await getPrintedImageFilenames(record.imagingResultId);
+  const cnPool = Array.isArray(ctx.cnFilesMediaPaths) ? ctx.cnFilesMediaPaths : [];
+  function combinedMediaPool() {
+    return extractedFiles.concat(cnPool);
+  }
+  function findMediaInPool(pool, wantFile, wantNoExt) {
+    return pool.find((f) => {
+      const fFile = path.basename(f);
+      if (String(fFile).toLowerCase() === wantFile.toLowerCase()) return true;
+      const fNoExt = path.parse(fFile).name.toLowerCase();
+      return fNoExt === wantNoExt;
+    });
+  }
+
   const imageFiles = [];
   const imageFilesSet = new Set();
   for (const filename of printedNames) {
@@ -1102,12 +1115,7 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
     const wantFile = path.basename(wantRaw);
     const wantNoExt = path.parse(wantFile).name.toLowerCase();
 
-    let abs = extractedFiles.find((f) => {
-      const fFile = path.basename(f);
-      if (String(fFile).toLowerCase() === wantFile.toLowerCase()) return true;
-      const fNoExt = path.parse(fFile).name.toLowerCase();
-      return fNoExt === wantNoExt;
-    });
+    let abs = findMediaInPool(combinedMediaPool(), wantFile, wantNoExt);
     if (!abs || !fs.existsSync(abs)) {
       // Resolve từ disk theo basename (ưu tiên jpg/png trước)
       abs = fileCopyHelper.resolveMediaPathOrNull(wantFile);
@@ -1117,18 +1125,12 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
     }
 
     if (abs && fs.existsSync(abs)) {
-      const low = abs.toLowerCase();
       // Nếu resolve ra zip thì extract rồi thử match lại theo want
-      if (low.endsWith('.zip')) {
+      if (abs.toLowerCase().endsWith('.zip')) {
         try {
           const extractedFromZip = extractImagesFromArchiveOrRaw(abs, extractDir);
           extractedFiles = extractedFiles.concat(extractedFromZip);
-          abs = extractedFiles.find((f) => {
-            const fFile = path.basename(f);
-            if (String(fFile).toLowerCase() === wantFile.toLowerCase()) return true;
-            const fNoExt = path.parse(fFile).name.toLowerCase();
-            return fNoExt === wantNoExt;
-          });
+          abs = findMediaInPool(combinedMediaPool(), wantFile, wantNoExt);
         } catch (ex) {
           logger.warn(
             `Failed to extract zip for ImagingResultId=${record.imagingResultId}, zip=${abs}: ${ex.message}`,
@@ -1137,6 +1139,7 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
       }
 
       // Chỉ merge ảnh jpg/png (pdf-lib không render bmp/webp trực tiếp).
+      const low = abs && fs.existsSync(abs) ? abs.toLowerCase() : '';
       if (low.endsWith('.jpg') || low.endsWith('.jpeg') || low.endsWith('.png')) {
         const ap = abs;
         if (!imageFilesSet.has(ap)) {
