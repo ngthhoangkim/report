@@ -30,12 +30,36 @@ function shortErr(e, max = 220) {
 }
 
 async function convertWithLibreOffice(mode, inputPath, outDir) {
+  const m = normalizeMode(mode);
   const bin = getLibreOfficeBinary();
-  const args = ['--headless', '--convert-to', mode, '--outdir', outDir, inputPath];
-  await execFileAsync(bin, args, {
-    maxBuffer: 50 * 1024 * 1024,
-    env: getLibreOfficeSpawnEnv(),
-  });
+  const absIn = path.resolve(inputPath);
+  const args = ['--headless', '--convert-to', m, '--outdir', path.resolve(outDir), absIn];
+  let stdout = '';
+  let stderr = '';
+  try {
+    const r = await execFileAsync(bin, args, {
+      maxBuffer: 50 * 1024 * 1024,
+      env: getLibreOfficeSpawnEnv(),
+      timeout: Math.max(30_000, Number(process.env.LIBREOFFICE_CONVERT_TIMEOUT_MS) || 180_000),
+    });
+    stdout = r.stdout != null ? String(r.stdout) : '';
+    stderr = r.stderr != null ? String(r.stderr) : '';
+  } catch (e) {
+    const parts = [
+      e && e.message,
+      e && e.stderr != null && String(e.stderr),
+      e && e.stdout != null && String(e.stdout),
+    ].filter(Boolean);
+    throw new Error(parts.join('\n') || 'LibreOffice convert failed');
+  }
+  const base = path.parse(absIn).name;
+  const expected = path.join(path.resolve(outDir), `${base}.${m}`);
+  if (!fs.existsSync(expected)) {
+    const tail = [stderr, stdout].join('\n').trim().slice(0, 4000);
+    throw new Error(
+      `LibreOffice không tạo file ${expected}${tail ? `\n--- soffice ---\n${tail}` : ''}`,
+    );
+  }
 }
 
 /**

@@ -3,6 +3,7 @@ const express = require('express');
 const db = require('./config/database');
 const reportRoutes = require('./routes/reportRoutes');
 const { startAutomation } = require('./services/automationService');
+const { startPrescriptionAutomation } = require('./services/prescriptionAutomationService');
 const logger = require('./utils/logger');
 
 const app = express();
@@ -30,10 +31,16 @@ app.listen(port, () => {
 
 // Start automation worker (polling) — keeps API intact for manual testing.
 const automation = startAutomation();
+const prescriptionAutomation = startPrescriptionAutomation();
 
 process.on('SIGINT', async () => {
     try {
       automation.stop();
+    } catch (_) {
+      // ignore
+    }
+    try {
+      prescriptionAutomation.stop();
     } catch (_) {
       // ignore
     }
@@ -44,6 +51,11 @@ process.on('SIGINT', async () => {
 process.on('SIGTERM', async () => {
   try {
     automation.stop();
+  } catch (_) {
+    // ignore
+  }
+  try {
+    prescriptionAutomation.stop();
   } catch (_) {
     // ignore
   }

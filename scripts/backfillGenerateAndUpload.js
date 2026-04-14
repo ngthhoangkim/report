@@ -1,34 +1,5 @@
-/**
- * Backfill: tạo PDF theo từng (FileNum, SessionId) trong khoảng thời gian, tùy chọn upload S3 qua API.
- *
- * Chạy theo TỪNG THÁNG (giảm tải DB), lọc trùng FileNum+SessionId trong cả job.
- *
- * Usage:
- *   # Thử 3 ngày gần nhất (AWS / smoke test) — ưu tiên hơn --years nếu không có --from
- *   node scripts/backfillGenerateAndUpload.js --days 3 --dry-run
- *   node scripts/backfillGenerateAndUpload.js --days 3 --no-upload
- *   node scripts/backfillGenerateAndUpload.js --days 3 --upload
- *
- *   # Khoảng ngày cố định (CreatedDate >= from và < to trong SQL)
- *   node scripts/backfillGenerateAndUpload.js --from 2026-03-30 --to 2026-04-03 --dry-run
- *
- *   # 3 năm lùi từ --to (hoặc từ "bây giờ" nếu không --to)
- *   node scripts/backfillGenerateAndUpload.js --years 3 --dry-run
- *   node scripts/backfillGenerateAndUpload.js --years 3 --upload
- *
- * Env:
- *   S3_UPLOAD_API_BASE — ví dụ https://dsbiy10xl4.execute-api.ap-southeast-1.amazonaws.com
- *   S3_UPLOAD_PREFIX   — mặc định khambenh/
- *   BACKFILL_CONCURRENCY — số phiên song song (mặc định 2)
- *   BACKFILL_DELAY_MS    — nghỉ giữa mỗi phiên (mặc định 0)
- *   BACKFILL_DAYS        — số ngày lùi (giống --days) khi không có --from / --days / --years trên CLI
- *
- * "Push" ở đây = upload multipart lên API (không phải git push).
- */
 require('dotenv').config();
 const fs = require('fs');
-const path = require('path');
-const { Blob } = require('buffer');
 const db = require('../src/config/database');
 const { getDistinctSessionsCreatedBetween } = require('../src/repositories/reportRepository');
 const {
@@ -36,6 +7,7 @@ const {
   resolveWriteOutputToDisk,
 } = require('../src/services/reportGeneratorService');
 const logger = require('../src/utils/logger');
+const { uploadPdfMultipartBuffer, uploadPdfMultipartFile } = require('../src/utils/s3UploadMultipart');
 
 function parseEnvDays() {
   const raw = process.env.BACKFILL_DAYS;
@@ -97,32 +69,6 @@ function* monthWindows(from, to) {
     yield { from: new Date(cur.getTime()), to: sliceEnd };
     cur = sliceEnd;
   }
-}
-
-async function uploadPdfMultipartBuffer(buf, fileName, baseUrl, prefix) {
-  const base = String(baseUrl || '').replace(/\/$/, '');
-  if (!base) throw new Error('S3_UPLOAD_API_BASE is empty');
-  const url = `${base}/api/v1/s3/upload-multiple`;
-  const name = path.basename(fileName || 'report.pdf');
-  const body = new FormData();
-  body.append('prefix', prefix || 'khambenh/');
-  body.append('files', new Blob([buf], { type: 'application/pdf' }), name);
-
-  const res = await fetch(url, { method: 'POST', body });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`Upload HTTP ${res.status}: ${text.slice(0, 500)}`);
-  }
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { raw: text };
-  }
-}
-
-async function uploadPdfMultipart(filePath, baseUrl, prefix) {
-  const buf = fs.readFileSync(filePath);
-  return uploadPdfMultipartBuffer(buf, path.basename(filePath), baseUrl, prefix);
 }
 
 async function runPool(items, concurrency, fn) {
@@ -275,7 +221,7 @@ async function main() {
             responseKeys: Array.isArray(up) ? up.length : Object.keys(up || {}),
           });
         } else if (args.upload && result.filePath && fs.existsSync(result.filePath)) {
-          const up = await uploadPdfMultipart(result.filePath, uploadBase, prefix);
+          const up = await uploadPdfMultipartFile(result.filePath, uploadBase, prefix);
           uploaded += 1;
           logger.info('Uploaded', {
             fileNum: s.fileNum,

@@ -125,9 +125,11 @@ async function closePool() {
  * Thực hiện truy vấn SQL
  * @param {string} query - SQL query string
  * @param {object} params - Parameter cho query
+ * @param {{ silent?: boolean }} [options] - silent: true — không log lỗi (dùng cho truy vấn thử schema)
  * @returns {array} Mảng kết quả
  */
-async function executeQuery(query, params = {}) {
+async function executeQuery(query, params = {}, options = {}) {
+  const silent = options.silent === true;
   try {
     const pool = await getPool();
     const request = pool.request();
@@ -140,7 +142,7 @@ async function executeQuery(query, params = {}) {
     const result = await request.query(query);
     return result.recordset || [];
   } catch (error) {
-    logger.error('Query execution error:', error.message);
+    if (!silent) logger.error('Query execution error:', error.message);
     throw error;
   }
 }

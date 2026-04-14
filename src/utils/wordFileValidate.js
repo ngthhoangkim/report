@@ -30,9 +30,16 @@ function validateWordTemplateFile(absPath) {
       slice[3] === 0xe0;
     const isZip =
       slice.length >= 4 && slice[0] === 0x50 && slice[1] === 0x4b && slice[2] === 0x03 && slice[3] === 0x04;
-    if (!isOle && !isZip) {
+    const isRtf =
+      slice.length >= 5 &&
+      slice[0] === 0x7b &&
+      slice[1] === 0x5c &&
+      slice[2] === 0x72 &&
+      slice[3] === 0x74 &&
+      slice[4] === 0x66;
+    if (!isOle && !isZip && !isRtf) {
       throw new Error(
-        `Template không phải .doc (OLE) hay .docx (ZIP): ${path.basename(absPath)}`,
+        `Template không phải .doc (OLE), .docx (ZIP), hay RTF ({\rtf): ${path.basename(absPath)}`,
       );
     }
   } finally {

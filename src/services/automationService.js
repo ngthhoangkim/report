@@ -155,6 +155,7 @@ async function runOnce() {
         durationMs,
       });
       logger.appendAutomationSummary({
+        jobType: 'cdha',
         status: 'ok',
         fileNum: g.fileNum,
         sessionId: g.sessionId,
@@ -177,6 +178,7 @@ async function runOnce() {
         reason: e?.code || null,
       });
       logger.appendAutomationSummary({
+        jobType: 'cdha',
         status: 'error',
         fileNum: g.fileNum,
         sessionId: g.sessionId,
