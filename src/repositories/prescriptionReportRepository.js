@@ -705,6 +705,35 @@ async function getUpdatedPrescriptionRowsSince(lastUpdatedAt, lastPrescriptionRo
     );
 }
 
+/**
+ * Backfill: lấy danh sách phiên có đơn thuốc trong [from, to) theo ViewRX.CreatedDate.
+ * Trả về distinct (fileNum, sessionId) theo thứ tự thời gian để backfill ổn định.
+ */
+async function getDistinctPrescriptionSessionsCreatedBetween(from, to) {
+  const rows = await db.executeQuery(
+    `
+    SELECT
+      LTRIM(RTRIM(CONVERT(VARCHAR(50), p.FileNum))) AS FileNum,
+      rx.SessionId,
+      MIN(rx.CreatedDate) AS FirstAt
+    FROM dbo.ViewRX rx WITH (NOLOCK)
+    INNER JOIN dbo.PersonView p WITH (NOLOCK) ON p.ContactId = rx.PatientID
+    WHERE rx.DeletedDate IS NULL
+      AND rx.CreatedDate >= @from
+      AND rx.CreatedDate < @to
+    GROUP BY p.FileNum, rx.SessionId
+    ORDER BY FirstAt ASC, rx.SessionId ASC
+    `,
+    { from, to },
+  );
+  return rows
+    .map((r) => ({
+      fileNum: r.FileNum != null ? String(r.FileNum).trim() : '',
+      sessionId: r.SessionId != null ? Number(r.SessionId) : null,
+    }))
+    .filter((r) => r.fileNum && r.sessionId != null && !Number.isNaN(r.sessionId));
+}
+
 /** Watermark mới nhất ViewRX (sau backfill / seed checkpoint). */
 async function getLatestPrescriptionWatermark() {
   const rows = await db.executeQuery(
@@ -729,5 +758,6 @@ module.exports = {
   getPrescriptionReportContextByScriptNo,
   resolveFileNumSessionIdForPrescription,
   getUpdatedPrescriptionRowsSince,
+  getDistinctPrescriptionSessionsCreatedBetween,
   getLatestPrescriptionWatermark,
 };
