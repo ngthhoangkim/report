@@ -3,6 +3,19 @@ const os = require('os');
 require('dotenv').config();
 const logger = require('../utils/logger');
 
+function envString(key, fallback = '') {
+  const raw = process.env[key];
+  if (raw == null) return fallback;
+  const s = String(raw).trim();
+  if (
+    (s.startsWith('"') && s.endsWith('"') && s.length >= 2) ||
+    (s.startsWith("'") && s.endsWith("'") && s.length >= 2)
+  ) {
+    return s.slice(1, -1);
+  }
+  return s;
+}
+
 function parseBool(value, defaultValue) {
   if (value === undefined) return defaultValue;
   return String(value).toLowerCase() === 'true';
@@ -12,11 +25,11 @@ function buildSqlConfig() {
   const isWindows = os.platform() === 'win32';
   const fallbackServer = '172.16.2.240';
   const fallbackDatabase = 'Hospital_NM';
-  const connectTimeout = parseInt(process.env.DB_CONNECT_TIMEOUT_MS, 10) || 15000;
-  const requestTimeout = parseInt(process.env.DB_REQUEST_TIMEOUT_MS, 10) || 120000;
+  const connectTimeout = parseInt(envString('DB_CONNECT_TIMEOUT_MS', ''), 10) || 15000;
+  const requestTimeout = parseInt(envString('DB_REQUEST_TIMEOUT_MS', ''), 10) || 120000;
 
-  const authMode = String(process.env.DB_AUTH_MODE || '').toLowerCase();
-  const envHasSqlLogin = Boolean(process.env.DB_USER && process.env.DB_PASSWORD);
+  const authMode = envString('DB_AUTH_MODE', '').toLowerCase();
+  const envHasSqlLogin = Boolean(envString('DB_USER', '') && envString('DB_PASSWORD', ''));
   const hasSqlLogin = envHasSqlLogin;
   const useWindowsAuth = authMode === 'windows' || (!hasSqlLogin && authMode !== 'sql');
 
@@ -29,11 +42,11 @@ function buildSqlConfig() {
       );
     }
 
-    const server = process.env.DB_SERVER || (isWindows ? fallbackServer : 'localhost');
-    const database = process.env.DB_DATABASE || fallbackDatabase;
-    const encrypt = parseBool(process.env.DB_ENCRYPT, true);
-    const trustServerCertificate = parseBool(process.env.DB_TRUST_SERVER_CERTIFICATE, true);
-    const connectionString = process.env.DB_CONN_STR || (
+    const server = envString('DB_SERVER', '') || (isWindows ? fallbackServer : 'localhost');
+    const database = envString('DB_DATABASE', '') || fallbackDatabase;
+    const encrypt = parseBool(envString('DB_ENCRYPT', undefined), true);
+    const trustServerCertificate = parseBool(envString('DB_TRUST_SERVER_CERTIFICATE', undefined), true);
+    const connectionString = envString('DB_CONN_STR', '') || (
       `Driver={ODBC Driver 17 for SQL Server};` +
       `Server=${server};` +
       `Database=${database};` +
@@ -58,23 +71,44 @@ function buildSqlConfig() {
   }
 
   // SQL Authentication (username/password)
+  const server = envString('DB_SERVER', '') || (isWindows ? fallbackServer : 'localhost');
+  const database = envString('DB_DATABASE', '') || fallbackDatabase;
+  const userName = envString('DB_USER', '') || (isWindows ? 'sa' : 'sa');
+  const password = envString('DB_PASSWORD', '') || '';
+  const encrypt = parseBool(envString('DB_ENCRYPT', undefined), false);
+  const trustServerCertificate = parseBool(envString('DB_TRUST_SERVER_CERTIFICATE', undefined), true);
+  const port = parseInt(envString('DB_PORT', ''), 10) || 1433;
+
+  logger.info('DB config (safe)', {
+    authMode: authMode || '(empty)',
+    driver: 'tedious',
+    server,
+    database,
+    port,
+    encrypt,
+    trustServerCertificate,
+    user: userName ? '(set)' : '(empty)',
+    connectTimeout,
+    requestTimeout,
+  });
+
   return {
-    server: process.env.DB_SERVER || (isWindows ? fallbackServer : 'localhost'),
-    database: process.env.DB_DATABASE || fallbackDatabase,
+    server,
+    database,
     authentication: {
       type: 'default',
       options: {
-        userName: process.env.DB_USER || (isWindows ? 'sa' : 'sa'),
-        password: process.env.DB_PASSWORD || '',
+        userName,
+        password,
       },
     },
     options: {
-      encrypt: parseBool(process.env.DB_ENCRYPT, false),
-      trustServerCertificate: parseBool(process.env.DB_TRUST_SERVER_CERTIFICATE, true),
+      encrypt,
+      trustServerCertificate,
       connectTimeout,
       requestTimeout,
     },
-    port: parseInt(process.env.DB_PORT, 10) || 1433,
+    port,
   };
 }
 
