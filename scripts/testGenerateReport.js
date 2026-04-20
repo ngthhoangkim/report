@@ -86,9 +86,13 @@ async function main() {
   try {
     await db.initializePool();
 
+    const ev = String(process.env.npm_lifecycle_event || '').toLowerCase().trim();
+    const nodeEnv = String(process.env.NODE_ENV || '').toLowerCase().trim();
+    const writeOutput = nodeEnv === 'test' || ev === 'test' || ev === 'test:report';
+
     const result = await generatePdfByFileNumAndSessionId(String(fileNum), sid, {
       resultFileName: resultFileName || undefined,
-      writeOutput: true,
+      writeOutput,
     });
 
     logger.info('Generate test OK', {

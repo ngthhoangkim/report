@@ -56,7 +56,20 @@ function resolveWriteOutputToDisk(options) {
   if (options.writeOutput === true) return true;
   if (options.writeOutput === false) return false;
   const raw = process.env.REPORT_WRITE_OUTPUT_TO_DISK;
-  if (raw === undefined || raw === '') return true;
+  // Default behavior: DO NOT write PDFs to PATHS_OUTPUT unless explicitly enabled,
+  // or when running test scripts via npm lifecycle events.
+  //
+  // This prevents automation/backfill/API runs from filling disk by default.
+  if (raw === undefined || raw === '') {
+    const ev = String(process.env.npm_lifecycle_event || '').toLowerCase().trim();
+    const nodeEnv = String(process.env.NODE_ENV || '').toLowerCase().trim();
+    const isTest =
+      nodeEnv === 'test' ||
+      ev === 'test' ||
+      ev === 'test:report' ||
+      ev === 'test:prescription';
+    return isTest;
+  }
   return String(raw).toLowerCase() !== 'false';
 }
 
@@ -70,6 +83,20 @@ async function generatePdfByFileNumAndSessionId(fileNum, sessionId, options = {}
   const key = jobKey(fileNum, sessionId);
   return withJobLock(key, async () => {
     const paths = getPaths();
+    const localMediaUsed = new Set();
+    const trackLocalMediaPath = (p) => {
+      if (!p) return;
+      try {
+        const rp = path.resolve(String(p));
+        const localRoot = paths.localImageDir ? path.resolve(String(paths.localImageDir)) : '';
+        if (!localRoot) return;
+        // Only track files inside PATHS_LOCAL_IMAGE_DIR to avoid deleting source/fallback.
+        if (rp === localRoot || !rp.startsWith(localRoot + path.sep)) return;
+        localMediaUsed.add(rp);
+      } catch (_) {
+        // ignore
+      }
+    };
     const records = await getReportDataListByFileNumAndSessionId(fileNum, sessionId);
 
     if (!records.length) {
@@ -133,6 +160,7 @@ async function generatePdfByFileNumAndSessionId(fileNum, sessionId, options = {}
           fileNum,
           sessionId,
           cnFilesMediaDir,
+          trackLocalMediaPath,
         );
         if (cnFilesMediaPaths.length > 0) {
           logger.info('CN_FILES session media attached to report job', {
@@ -152,6 +180,7 @@ async function generatePdfByFileNumAndSessionId(fileNum, sessionId, options = {}
       templatesDir: paths.templates,
       cnFilesMediaPaths,
       reportSegmentCount: records.length,
+      trackLocalMediaPath,
     };
 
     const segmentBuffers = [];
@@ -251,6 +280,30 @@ async function generatePdfByFileNumAndSessionId(fileNum, sessionId, options = {}
       }
       return out;
     } finally {
+      // Optional: purge local media cache (PATHS_LOCAL_IMAGE_DIR) used by this job.
+      if (String(process.env.REPORT_PURGE_LOCAL_MEDIA_CACHE || '').toLowerCase().trim() === 'true') {
+        let removed = 0;
+        let failed = 0;
+        for (const p of localMediaUsed) {
+          try {
+            if (fs.existsSync(p)) {
+              fs.unlinkSync(p);
+              removed += 1;
+            }
+          } catch (_) {
+            failed += 1;
+          }
+        }
+        if (removed || failed) {
+          logger.info('Purged local media cache for report job', {
+            fileNum: String(fileNum),
+            sessionId: Number(sessionId),
+            removed,
+            failed,
+            localRoot: paths.localImageDir,
+          });
+        }
+      }
       cleanupDirectory(tempRoot);
     }
   });

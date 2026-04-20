@@ -58,6 +58,14 @@ async function collectCnFilesSessionMedia(fileCopyHelper, fileNum, sessionId, ex
         });
         continue;
       }
+      // Optional tracker: allow caller to cleanup local cache files after job.
+      if (typeof arguments[4] === 'function') {
+        try {
+          arguments[4](localPath);
+        } catch (_) {
+          // ignore
+        }
+      }
       const extracted = extractImagesFromArchiveOrRaw(localPath, extractToDir, zipPassword);
       for (const p of extracted) {
         const rp = path.resolve(p);

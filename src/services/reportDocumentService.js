@@ -1191,6 +1191,13 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
   let zipPath = null;
   if (record.fileName) {
     zipPath = await fileCopyHelper.copyFileWithFallback(record.fileName);
+    if (zipPath && typeof ctx.trackLocalMediaPath === 'function') {
+      try {
+        ctx.trackLocalMediaPath(zipPath);
+      } catch (_) {
+        // ignore
+      }
+    }
     if (!zipPath) {
       logger.warn(`Media not found for ItemNum=${record.itemNum}, FileName=${record.fileName}`);
     }
@@ -1235,6 +1242,13 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
       abs = fileCopyHelper.resolveMediaPathOrNull(wantFile);
       if ((!abs || !fs.existsSync(abs)) && wantNoExt) {
         abs = fileCopyHelper.resolveMediaPathOrNull(wantNoExt);
+      }
+    }
+    if (abs && typeof ctx.trackLocalMediaPath === 'function') {
+      try {
+        ctx.trackLocalMediaPath(abs);
+      } catch (_) {
+        // ignore
       }
     }
 
