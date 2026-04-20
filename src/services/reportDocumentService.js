@@ -13,6 +13,7 @@ const { writeRtfFileForOffice } = require('../utils/rtfFileWrite');
 const { validateWordTemplateFile } = require('../utils/wordFileValidate');
 const { calcAge } = require('../utils/age');
 const { getPrintedImageFilenames } = require('../repositories/reportRepository');
+const asposeWords = require('../utils/asposeWordsConvert');
 
 function formatDateVN(dateInput) {
   if (!dateInput) return '';
@@ -127,6 +128,43 @@ function buildRenderPayload(record, rtfTokens) {
 
 async function convertWithLibreOffice(mode, inputPath, outDir) {
   await convertWithOffice(mode, inputPath, outDir);
+}
+
+function isAsposeFullRenderEnabled() {
+  return String(process.env.REPORT_ASPOSE_FULL_RENDER || '').toLowerCase().trim() === 'true';
+}
+
+function asposeNormalizeReplacementText(v) {
+  const s = v == null ? '' : String(v);
+  // Aspose Find/Replace meta: &p paragraph break, &l manual line break.
+  // Giữ behavior gần docxtemplater(linebreaks=true): xuống dòng → paragraph.
+  return s.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '&p');
+}
+
+function fillTemplateWithAsposeAndSavePdf(templatePath, payload, outPdfPath) {
+  const aw = asposeWords.getAsposeWordsWithLicenseOrThrow();
+  const doc = new aw.Document(templatePath);
+
+  // Replace placeholders in the form <<Key>> (same convention as docxtemplater templates).
+  const opts = new aw.Replacing.FindReplaceOptions();
+  opts.matchCase = false;
+  opts.findWholeWordsOnly = false;
+
+  for (const [k, raw] of Object.entries(payload || {})) {
+    const needle = `<<${k}>>`;
+    const repl = asposeNormalizeReplacementText(raw);
+    if (!needle || needle === '<<>>') continue;
+    // Range.replace returns replacement count; ignore.
+    doc.range.replace(needle, repl, opts);
+  }
+
+  // Strip any remaining image placeholders to avoid leaking tokens to PDF.
+  // Keep this aligned with buildRenderPayload pre-fill Image1..Image200.
+  for (let i = 1; i <= 200; i += 1) {
+    doc.range.replace(`<<Image${i}>>`, '', opts);
+  }
+
+  doc.save(outPdfPath, aw.SaveFormat.Pdf);
 }
 
 function extractWordDocumentXmlInnerBody(docXml) {
@@ -1320,6 +1358,65 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
     throw new Error(
       `Template staging failed for ImagingResultId=${record.imagingResultId}: ${e?.message || String(e)}`,
     );
+  }
+
+  // Full Aspose renderer (test mode):
+  // - Do not use docxtemplater/LibreOffice.
+  // - Fill the existing <<Field>> placeholders by find/replace.
+  // - Render PDF directly via Aspose.Words.
+  // Notes:
+  // - Rich-text RTF is downgraded to plain text (consistent with existing fallback path).
+  // - Images are appended as PDF pages (same as current mergeBasePdfWithImagePages behavior).
+  if (isAsposeFullRenderEnabled() && asposeWords.isAsposeWordsEnabled()) {
+    if (!asposeWords.isAsposeWordsAvailable()) {
+      logger.warn(
+        'REPORT_ASPOSE_FULL_RENDER=true but @aspose/words not available; falling back to legacy pipeline',
+      );
+    } else {
+      const baseName = `rendered_${record.imagingResultId}_${segmentIndex}`;
+      const basePdfPath = path.join(tempDir, `${baseName}.pdf`);
+      const finalPdfPath = path.join(tempDir, `${baseName}_final.pdf`);
+
+      const tmpPrefix = path.join(tempDir, `rtf_${record.imagingResultId}_${segmentIndex}`);
+      const resultPlain = resultRtf ? rtfToPlainText(resultRtf, `${tmpPrefix}_result`) : '';
+      const conclusionPlain = conclusionRtf
+        ? rtfToPlainText(conclusionRtf, `${tmpPrefix}_conclusion`)
+        : '';
+      const suggestionPlain = suggestionRtf
+        ? rtfToPlainText(suggestionRtf, `${tmpPrefix}_suggestion`)
+        : '';
+
+      const plainTokens = {
+        resultToken: resultPlain || '',
+        conclusionToken: conclusionPlain || '',
+        suggestionToken: suggestionPlain || '',
+      };
+
+      // buildRenderPayload returns a Proxy but has enumerable keys on the target
+      const payloadProxy = buildRenderPayload(record, plainTokens);
+      const payload = {};
+      for (const k of Object.keys(payloadProxy)) {
+        payload[k] = payloadProxy[k];
+      }
+
+      try {
+        fillTemplateWithAsposeAndSavePdf(stagedTemplate, payload, basePdfPath);
+        if (!fs.existsSync(basePdfPath)) {
+          throw new Error(`Aspose produced no PDF: ${basePdfPath}`);
+        }
+      } catch (e) {
+        logger.warn(
+          `Aspose full render failed for ImagingResultId=${record.imagingResultId} (segment=${segmentIndex}); falling back to legacy pipeline: ${e?.message || String(e)}`,
+        );
+        // Continue legacy path below.
+      }
+
+      if (fs.existsSync(basePdfPath)) {
+        // Append resolved images as pages after the text PDF.
+        await mergeBasePdfWithImagePages(basePdfPath, imageFiles, finalPdfPath);
+        return fs.readFileSync(finalPdfPath);
+      }
+    }
   }
 
   await convertWithLibreOffice('docx', stagedTemplate, tempDir);

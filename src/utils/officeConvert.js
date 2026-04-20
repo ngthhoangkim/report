@@ -6,6 +6,7 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const { getLibreOfficeBinary, getLibreOfficeSpawnEnv } = require('./libreOffice');
 const logger = require('./logger');
+const asposeWords = require('./asposeWordsConvert');
 
 const execFileAsync = promisify(execFile);
 
@@ -132,11 +133,32 @@ try {
 
 /**
  * Unified conversion:
- * - On Windows: prefer Word when USE_WORD=true (default true).
- * - On macOS/Linux: use LibreOffice/soffice.
+ * - If ASPOSE_WORDS_ENABLED=true and @aspose/words loads (Windows x64): Aspose.Words.
+ * - Else on Windows: Word when USE_WORD=true (default true).
+ * - Else: LibreOffice/soffice.
  */
 async function convertWithOffice(mode, inputPath, outDir) {
   const m = normalizeMode(mode);
+
+  if (asposeWords.isAsposeWordsEnabled()) {
+    if (asposeWords.isAsposeWordsAvailable()) {
+      try {
+        asposeWords.convertWithAsposeWords(m, inputPath, outDir);
+        return;
+      } catch (e) {
+        logger.warn('Aspose.Words convert failed; fallback to Word/LibreOffice', {
+          mode: m,
+          input: path.basename(String(inputPath || '')),
+          reason: shortErr(e),
+        });
+      }
+    } else {
+      logger.warn(
+        'ASPOSE_WORDS_ENABLED=true but @aspose/words is not available (install on Windows x64 or unset env); using Word/LibreOffice',
+      );
+    }
+  }
+
   const useWord =
     isWindows() &&
     String(process.env.USE_WORD || 'true').toLowerCase().trim() !== 'false';

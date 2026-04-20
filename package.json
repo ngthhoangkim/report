@@ -44,5 +44,8 @@
   "devDependencies": {
     "nodemon": "^3.0.2",
     "vitest": "^3.0.5"
+  },
+  "optionalDependencies": {
+    "@aspose/words": "^26.4.0"
   }
 }
