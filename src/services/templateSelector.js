@@ -3,14 +3,20 @@ const path = require('path');
 const logger = require('../utils/logger');
 const { PathologyType } = require('../constants/pathologyTypes');
 
-/** Giới hạn số ảnh theo tên file template (fallback templates — .doc). */
+/** Giới hạn số ảnh theo tên file template. */
 const TemplateImageLimits = {
   'UltraSoundResultTemplate 1H.doc': 1,
+  'UltraSoundResultTemplate 1H.docx': 1,
   'UltraSoundResultTemplate.doc': 2,
+  'UltraSoundResultTemplate.docx': 2,
   'NoiSoi 9H.doc': 9,
+  'NoiSoi 9H.docx': 9,
   'NoiSoiMoi.doc': 4,
+  'NoiSoiMoi.docx': 4,
   'SoiCTC.doc': 2,
+  'SoiCTC.docx': 2,
   'XrayResultTemplate.doc': 1,
+  'XrayResultTemplate.docx': 1,
 };
 
 /**
@@ -21,6 +27,24 @@ const TemplateImageLimits = {
 class TemplateSelector {
   constructor(templateBasePath) {
     this.templateBasePath = templateBasePath;
+  }
+
+  /**
+   * Your DB may still store `.doc` while templates were migrated to `.docx`.
+   * Prefer `.docx` by default to reduce conversions.
+   *
+   * @returns {string[]} candidate basenames in priority order
+   */
+  resolveTemplateCandidates(templateName) {
+    const name = String(templateName || '').trim();
+    if (!name) return [];
+    const ext = path.extname(name).toLowerCase();
+    if (ext === '.doc') {
+      const base = path.basename(name, ext);
+      // Prefer docx first (new flow), keep doc as fallback (old flow).
+      return [`${base}.docx`, `${base}.doc`];
+    }
+    return [name];
   }
 
   /**
@@ -41,14 +65,16 @@ class TemplateSelector {
     // Priority 1: TemplateFile từ DB
     if (templateFile && String(templateFile).trim()) {
       const templateName = path.basename(String(templateFile).trim());
-      const templatePath = path.join(base, templateName);
-
-      if (fs.existsSync(templatePath)) {
-        logger.info(`Using template from database: ${templateName}`);
-        return templatePath;
+      const candidates = this.resolveTemplateCandidates(templateName);
+      for (const cand of candidates) {
+        const templatePath = path.join(base, cand);
+        if (fs.existsSync(templatePath)) {
+          logger.info(`Using template from database: ${cand}`);
+          return templatePath;
+        }
       }
 
-      logger.warn(`Template from database not found locally: ${templatePath}`);
+      logger.warn(`Template from database not found locally: ${path.join(base, templateName)}`);
 
       if (baseExists) {
         try {
@@ -89,8 +115,8 @@ class TemplateSelector {
   selectUltraSoundFallback(imageCount) {
     const names =
       imageCount <= 1
-        ? ['UltraSoundResultTemplate 1H.doc']
-        : ['UltraSoundResultTemplate.doc'];
+        ? ['UltraSoundResultTemplate 1H.docx', 'UltraSoundResultTemplate 1H.doc']
+        : ['UltraSoundResultTemplate.docx', 'UltraSoundResultTemplate.doc'];
 
     for (const name of names) {
       const templatePath = path.join(this.templateBasePath, name);
@@ -104,7 +130,7 @@ class TemplateSelector {
   }
 
   selectXrayFallback() {
-    const names = ['XrayResultTemplate.doc'];
+    const names = ['XrayResultTemplate.docx', 'XrayResultTemplate.doc'];
     for (const name of names) {
       const templatePath = path.join(this.templateBasePath, name);
       if (fs.existsSync(templatePath)) {
