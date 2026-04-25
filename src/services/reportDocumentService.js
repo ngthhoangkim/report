@@ -1206,7 +1206,7 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
     });
   }
 
-  const imageFiles = [];
+  let imageFiles = [];
   const imageFilesSet = new Set();
   for (const filename of printedNames) {
     const wantRaw = String(filename).trim();
