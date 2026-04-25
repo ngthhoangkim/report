@@ -6,9 +6,17 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const { getLibreOfficeBinary, getLibreOfficeSpawnEnv } = require('./libreOffice');
 const logger = require('./logger');
-const asposeWords = require('./asposeWordsConvert');
+const { isConvertApiEnabled, getConvertApiSecretOrNull, convertWithConvertApi } = require('./convertApiConvert');
 
 const execFileAsync = promisify(execFile);
+
+function nowMs() {
+  return Number(process.hrtime.bigint() / 1000000n);
+}
+
+function timingEnabled() {
+  return String(process.env.REPORT_TIMING || '').toLowerCase().trim() === 'true';
+}
 
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -133,29 +141,32 @@ try {
 
 /**
  * Unified conversion:
- * - If ASPOSE_WORDS_ENABLED=true and @aspose/words loads (Windows x64): Aspose.Words.
+ * - If CONVERTAPI_ENABLED=true and CONVERTAPI_SECRET is set: ConvertAPI (HTTP).
  * - Else on Windows: Word when USE_WORD=true (default true).
  * - Else: LibreOffice/soffice.
  */
 async function convertWithOffice(mode, inputPath, outDir) {
   const m = normalizeMode(mode);
+  const t0 = timingEnabled() ? nowMs() : 0;
 
-  if (asposeWords.isAsposeWordsEnabled()) {
-    if (asposeWords.isAsposeWordsAvailable()) {
-      try {
-        asposeWords.convertWithAsposeWords(m, inputPath, outDir);
-        return;
-      } catch (e) {
-        logger.warn('Aspose.Words convert failed; fallback to Word/LibreOffice', {
+  if (isConvertApiEnabled() && getConvertApiSecretOrNull()) {
+    try {
+      await convertWithConvertApi(m, inputPath, outDir);
+      if (t0) {
+        logger.info('Convert timing', {
+          engine: 'convertapi',
           mode: m,
           input: path.basename(String(inputPath || '')),
-          reason: shortErr(e),
+          durationMs: nowMs() - t0,
         });
       }
-    } else {
-      logger.warn(
-        'ASPOSE_WORDS_ENABLED=true but @aspose/words is not available (install on Windows x64 or unset env); using Word/LibreOffice',
-      );
+      return;
+    } catch (e) {
+      logger.warn('ConvertAPI convert failed; fallback to Word/LibreOffice', {
+        mode: m,
+        input: path.basename(String(inputPath || '')),
+        reason: shortErr(e),
+      });
     }
   }
 
@@ -165,7 +176,16 @@ async function convertWithOffice(mode, inputPath, outDir) {
 
   if (useWord) {
     try {
-      return await convertWithWord(m, inputPath, outDir);
+      const r = await convertWithWord(m, inputPath, outDir);
+      if (t0) {
+        logger.info('Convert timing', {
+          engine: 'word',
+          mode: m,
+          input: path.basename(String(inputPath || '')),
+          durationMs: nowMs() - t0,
+        });
+      }
+      return r;
     } catch (e) {
       logger.warn('Word convert failed; fallback to LibreOffice', {
         mode: m,
@@ -173,7 +193,16 @@ async function convertWithOffice(mode, inputPath, outDir) {
         reason: shortErr(e),
       });
       try {
-        return await convertWithLibreOffice(m, inputPath, outDir);
+        const r2 = await convertWithLibreOffice(m, inputPath, outDir);
+        if (t0) {
+          logger.info('Convert timing', {
+            engine: 'libreoffice',
+            mode: m,
+            input: path.basename(String(inputPath || '')),
+            durationMs: nowMs() - t0,
+          });
+        }
+        return r2;
       } catch (e2) {
         logger.error('LibreOffice fallback also failed', {
           mode: m,
@@ -185,7 +214,16 @@ async function convertWithOffice(mode, inputPath, outDir) {
       }
     }
   }
-  return convertWithLibreOffice(m, inputPath, outDir);
+  const r3 = await convertWithLibreOffice(m, inputPath, outDir);
+  if (t0) {
+    logger.info('Convert timing', {
+      engine: 'libreoffice',
+      mode: m,
+      input: path.basename(String(inputPath || '')),
+      durationMs: nowMs() - t0,
+    });
+  }
+  return r3;
 }
 
 module.exports = {
