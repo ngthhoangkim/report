@@ -13,13 +13,17 @@ function timingEnabled() {
  * Note: conversion fidelity depends on RTF features used.
  *
  * @param {string} rtf
- * @returns {{ html: string, durationMs?: number }}
+ * @returns {Promise<{ html: string, durationMs?: number }>}
  */
 function rtfToHtmlLocal(rtf) {
   const t0 = timingEnabled() ? nowMs() : 0;
-  const html = rtfToHTML.fromString(String(rtf || ''));
-  if (!t0) return { html };
-  return { html, durationMs: nowMs() - t0 };
+  return new Promise((resolve, reject) => {
+    rtfToHTML.fromString(String(rtf || ''), (err, html) => {
+      if (err) return reject(err);
+      if (!t0) return resolve({ html: String(html || '') });
+      return resolve({ html: String(html || ''), durationMs: nowMs() - t0 });
+    });
+  });
 }
 
 /**

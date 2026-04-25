@@ -1398,9 +1398,9 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
   let conclusionPlain = '';
   let suggestionPlain = '';
   if (mode === 'rtf_html_plain') {
-    const r0 = resultRtf ? rtfToHtmlLocal(resultRtf) : { html: '' };
-    const c0 = conclusionRtf ? rtfToHtmlLocal(conclusionRtf) : { html: '' };
-    const s0 = suggestionRtf ? rtfToHtmlLocal(suggestionRtf) : { html: '' };
+    const r0 = resultRtf ? await rtfToHtmlLocal(resultRtf) : { html: '' };
+    const c0 = conclusionRtf ? await rtfToHtmlLocal(conclusionRtf) : { html: '' };
+    const s0 = suggestionRtf ? await rtfToHtmlLocal(suggestionRtf) : { html: '' };
     resultPlain = htmlToTextLoose(r0.html);
     conclusionPlain = htmlToTextLoose(c0.html);
     suggestionPlain = htmlToTextLoose(s0.html);
