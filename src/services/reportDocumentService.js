@@ -1160,7 +1160,9 @@ function shouldUseCnFilesMediaForSegment(ctx, record, segmentIndex) {
  * One imaging record → one PDF buffer, hoặc null nếu không có template trên disk.
  */
 async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
+  const t0 = timingEnabled() ? nowMs() : 0;
   const { fileCopyHelper, templateSelector } = ctx;
+  const richMode = richTextMode();
 
   const extractDir = path.join(tempDir, `extract_${record.imagingResultId}_${segmentIndex}`);
   ensureDirectoryExists(extractDir);
@@ -1289,6 +1291,16 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
   logger.info(
     `Resolved ${imageFiles.length} image(s) for ImagingResultId=${record.imagingResultId} (printed=${printedNames.length}, CN_FILES pool=${cnPool.length}, useCnPoolThisSegment=${useCnFilesThisSegment})`,
   );
+  if (t0) {
+    logger.info('Segment timing', {
+      step: 'resolve_media',
+      imagingResultId: record.imagingResultId,
+      segmentIndex,
+      richTextMode: richMode,
+      imageCount: imageFiles.length,
+      durationMs: nowMs() - t0,
+    });
+  }
 
   const resultRtf = decompressToString(record.resultData);
   const conclusionRtf = decompressToString(record.conclusionData);
@@ -1381,7 +1393,7 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
 
   const tmpPrefix = path.join(tempDir, `rtf_${record.imagingResultId}_${segmentIndex}`);
 
-  const mode = richTextMode();
+  const mode = richMode;
   let resultPlain = '';
   let conclusionPlain = '';
   let suggestionPlain = '';
@@ -1436,7 +1448,16 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
     },
   });
 
+  const tRender0 = timingEnabled() ? nowMs() : 0;
   doc.render(buildRenderPayload(record, tokens));
+  if (tRender0) {
+    logger.info('Segment timing', {
+      step: 'docxtemplater_render',
+      imagingResultId: record.imagingResultId,
+      segmentIndex,
+      durationMs: nowMs() - tRender0,
+    });
+  }
 
   const baseName = `rendered_${record.imagingResultId}_${segmentIndex}`;
   const renderedDocxPath = path.join(tempDir, `${baseName}.docx`);
@@ -1456,6 +1477,7 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
   const basePdfPath = path.join(tempDir, `${baseName}.pdf`);
 
   try {
+    const tInject0 = timingEnabled() ? nowMs() : 0;
     if (Object.keys(tokenToRtf).length) {
       await injectRtfIntoDocx(
         renderedDocxPath,
@@ -1463,13 +1485,32 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
         path.join(tempDir, `rtf_inject_${record.imagingResultId}_${segmentIndex}`),
       );
     }
+    if (tInject0) {
+      logger.info('Segment timing', {
+        step: 'rtf_inject',
+        imagingResultId: record.imagingResultId,
+        segmentIndex,
+        enabled: Object.keys(tokenToRtf).length > 0,
+        tokenCount: Object.keys(tokenToRtf).length,
+        durationMs: nowMs() - tInject0,
+      });
+    }
 
     applyReferDoctorAlignmentToDocxPath(renderedDocxPath);
     applyClinicalClosingAlignmentToDocxPath(renderedDocxPath);
 
+    const tPdf0 = timingEnabled() ? nowMs() : 0;
     await convertWithLibreOffice('pdf', renderedDocxPath, tempDir);
     if (!fs.existsSync(basePdfPath)) {
       throw new Error(`LibreOffice produced no PDF: ${basePdfPath}`);
+    }
+    if (tPdf0) {
+      logger.info('Segment timing', {
+        step: 'docx_to_pdf',
+        imagingResultId: record.imagingResultId,
+        segmentIndex,
+        durationMs: nowMs() - tPdf0,
+      });
     }
   } catch (e) {
     logger.warn(
@@ -1497,9 +1538,18 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
     normalizeImagePlaceholderTokensInDocx(renderedDocxPath);
     applyReferDoctorAlignmentToDocxPath(renderedDocxPath);
     applyClinicalClosingAlignmentToDocxPath(renderedDocxPath);
+    const tPdfFallback0 = timingEnabled() ? nowMs() : 0;
     await convertWithLibreOffice('pdf', renderedDocxPath, tempDir);
     if (!fs.existsSync(basePdfPath)) {
       throw new Error(`LibreOffice produced no PDF after fallback: ${basePdfPath}`);
+    }
+    if (tPdfFallback0) {
+      logger.info('Segment timing', {
+        step: 'docx_to_pdf_fallback_plain',
+        imagingResultId: record.imagingResultId,
+        segmentIndex,
+        durationMs: nowMs() - tPdfFallback0,
+      });
     }
   }
 
@@ -1527,11 +1577,20 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
     try {
       applyReferDoctorAlignmentToDocxPath(renderedDocxPath);
       applyClinicalClosingAlignmentToDocxPath(renderedDocxPath);
+      const tRePdf0 = timingEnabled() ? nowMs() : 0;
       await convertWithLibreOffice('pdf', renderedDocxPath, tempDir);
       if (!fs.existsSync(basePdfPath)) {
         throw new Error(`LibreOffice produced no PDF: ${basePdfPath}`);
       }
       pdfBaseForAppend = basePdfPath;
+      if (tRePdf0) {
+        logger.info('Segment timing', {
+          step: 'docx_to_pdf_after_embed',
+          imagingResultId: record.imagingResultId,
+          segmentIndex,
+          durationMs: nowMs() - tRePdf0,
+        });
+      }
     } catch (e) {
       logger.warn(
         `Re-convert after embedding failed for ImagingResultId=${record.imagingResultId} (segment=${segmentIndex}). Fallback to appending all image pages. reason=${e?.message || String(e)}`,
@@ -1549,9 +1608,18 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
       stripImagePlaceholderTokensInDocxPath(renderedDocxPath, tokens);
       applyReferDoctorAlignmentToDocxPath(renderedDocxPath);
       applyClinicalClosingAlignmentToDocxPath(renderedDocxPath);
+      const tStripPdf0 = timingEnabled() ? nowMs() : 0;
       await convertWithLibreOffice('pdf', renderedDocxPath, tempDir);
       if (fs.existsSync(basePdfPath)) {
         pdfBaseForAppend = basePdfPath;
+      }
+      if (tStripPdf0) {
+        logger.info('Segment timing', {
+          step: 'docx_to_pdf_after_strip_img_tokens',
+          imagingResultId: record.imagingResultId,
+          segmentIndex,
+          durationMs: nowMs() - tStripPdf0,
+        });
       }
     } catch (e) {
       logger.warn(`Failed to strip __IMG_* tokens before appending pages: ${e?.message || String(e)}`);
