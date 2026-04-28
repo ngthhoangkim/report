@@ -34,6 +34,12 @@ const DEFAULT_TEMPLATE = path.join(
   '../../Templates/ToaThuoc/toathuoc.docx',
 );
 
+function resolvePrescriptionTemplatePathFromEnv() {
+  const envPath = String(process.env.PRESCRIPTION_TEMPLATE_PATH || '').trim();
+  if (envPath) return path.resolve(envPath);
+  return null;
+}
+
 function resolveAltDocOrDocx(p) {
   const abs = path.resolve(String(p || ''));
   const ext = path.extname(abs).toLowerCase();
@@ -154,9 +160,10 @@ function buildPayloadFromContext(ctx, fileNum, sessionId) {
  * @returns {Promise<Buffer>}
  */
 async function generatePrescriptionPdf(fileNum, sessionId, options = {}) {
+  const envTemplate = resolvePrescriptionTemplatePathFromEnv();
   let templatePath = options.templatePath
     ? path.resolve(options.templatePath)
-    : path.resolve(DEFAULT_TEMPLATE);
+    : envTemplate || path.resolve(DEFAULT_TEMPLATE);
   if (!fs.existsSync(templatePath)) {
     const alt = resolveAltDocOrDocx(templatePath);
     if (alt && fs.existsSync(alt)) {
