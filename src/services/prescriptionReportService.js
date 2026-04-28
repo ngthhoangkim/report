@@ -234,7 +234,27 @@ async function generatePrescriptionPdf(fileNum, sessionId, options = {}) {
           return target[prop];
         },
       });
-      doc.render(proxy);
+      try {
+        doc.render(proxy);
+      } catch (e) {
+        if (String(process.env.PRESCRIPTION_DEBUG_FAILED_DOCX || '').toLowerCase() === 'true') {
+          try {
+            const failDir = path.resolve(process.cwd(), 'output', 'prescription-test');
+            fs.mkdirSync(failDir, { recursive: true });
+            const copyTo = path.join(
+              failDir,
+              `toa_template_debug_render_fail_${fileNum}_${sessionId}_${unit ?? 'main'}.docx`,
+            );
+            fs.copyFileSync(templateDocxPath, copyTo);
+            logger.warn('PRESCRIPTION_DEBUG_FAILED_DOCX: saved template docx for render error', {
+              copyTo,
+            });
+          } catch (_) {
+            /* ignore */
+          }
+        }
+        throw e;
+      }
 
       const baseName =
         unit != null
