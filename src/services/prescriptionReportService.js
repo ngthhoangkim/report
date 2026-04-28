@@ -34,6 +34,16 @@ const DEFAULT_TEMPLATE = path.join(
   '../../Templates/ToaThuoc/toathuoc.docx',
 );
 
+function resolveAltDocOrDocx(p) {
+  const abs = path.resolve(String(p || ''));
+  const ext = path.extname(abs).toLowerCase();
+  const dir = path.dirname(abs);
+  const base = path.parse(abs).name;
+  if (ext === '.doc') return path.join(dir, `${base}.docx`);
+  if (ext === '.docx') return path.join(dir, `${base}.doc`);
+  return null;
+}
+
 function formatDateVN(dateInput) {
   if (!dateInput) return '';
   const d = new Date(dateInput);
@@ -144,11 +154,20 @@ function buildPayloadFromContext(ctx, fileNum, sessionId) {
  * @returns {Promise<Buffer>}
  */
 async function generatePrescriptionPdf(fileNum, sessionId, options = {}) {
-  const templatePath = options.templatePath
+  let templatePath = options.templatePath
     ? path.resolve(options.templatePath)
     : path.resolve(DEFAULT_TEMPLATE);
   if (!fs.existsSync(templatePath)) {
-    throw new Error(`Không thấy template đơn thuốc: ${templatePath}`);
+    const alt = resolveAltDocOrDocx(templatePath);
+    if (alt && fs.existsSync(alt)) {
+      logger.warn('Prescription template not found, fallback to alt extension', {
+        requested: templatePath,
+        resolved: alt,
+      });
+      templatePath = alt;
+    } else {
+      throw new Error(`Không thấy template đơn thuốc: ${templatePath}`);
+    }
   }
 
   // Một SessionId có nhiều SubSessionId → mỗi SubSessionId một toa (PDF gộp theo thứ tự).
