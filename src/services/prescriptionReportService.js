@@ -126,6 +126,12 @@ function buildPayloadFromContext(ctx, fileNum, sessionId) {
     Note: formatRxNoteBlock(r),
     RowQty: formatRxTotalCell(r),
   }));
+  // Some templates use a single placeholder <<Items>> instead of a docxtemplater loop.
+  // Provide a plain multiline string as a fallback.
+  const Items = items
+    .map((it) => [it.ItemLine, it.PerD, it.DPL, it.Note].filter(Boolean).join(' — '))
+    .filter(Boolean)
+    .join('\n');
 
   return {
     PatientName: str(patient?.FullName),
@@ -144,6 +150,7 @@ function buildPayloadFromContext(ctx, fileNum, sessionId) {
     Note: instructions,
     DPL: maxRepeats > 0 ? str(maxRepeats) : str(first.REPEATS ?? ''),
     PerD: perD,
+    Items,
     items,
     DateRpt: formatDateVN(refDate),
     ReExamDate: formatDateVN(first.FinishDate),
