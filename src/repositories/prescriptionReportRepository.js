@@ -625,20 +625,36 @@ async function resolveFileNumSessionIdForPrescription({ fileNum, sessionId }) {
   if (sidRaw) {
     const sid = Number(sidRaw);
     if (!Number.isFinite(sid)) throw new Error(`sessionId không hợp lệ: ${sidRaw}`);
-    const rows = await db.executeQuery(
+    // Avoid heavy join on large ViewRX/PersonView when only SessionId is known.
+    // Step 1: pick one PatientID in this session (ViewRX should be indexed by SessionId).
+    const rx = await db.executeQuery(
       `
-      SELECT TOP 1 p.FileNum
+      SELECT TOP 1 rx.PatientID
       FROM dbo.ViewRX rx WITH (NOLOCK)
-      INNER JOIN dbo.PersonView p WITH (NOLOCK) ON p.ContactId = rx.PatientID
       WHERE rx.DeletedDate IS NULL
         AND rx.SessionId = @sessionId
+      ORDER BY rx.ID DESC
       `,
       { sessionId: sid },
     );
-    if (!rows[0] || rows[0].FileNum == null) {
+    const pid = rx[0]?.PatientID;
+    if (pid == null) {
       throw new Error(`Không có ViewRX cho SessionId=${sid}`);
     }
-    return { fileNum: String(rows[0].FileNum).trim(), sessionId: sid };
+    // Step 2: resolve FileNum by ContactId (PatientID)
+    const pv = await db.executeQuery(
+      `
+      SELECT TOP 1 p.FileNum
+      FROM dbo.PersonView p WITH (NOLOCK)
+      WHERE p.ContactId = @contactId
+      `,
+      { contactId: pid },
+    );
+    const fileNumResolved = pv[0]?.FileNum;
+    if (fileNumResolved == null || String(fileNumResolved).trim() === '') {
+      throw new Error(`Không tìm thấy FileNum từ PersonView cho SessionId=${sid} (ContactId=${pid})`);
+    }
+    return { fileNum: String(fileNumResolved).trim(), sessionId: sid };
   }
 
   const rows = await db.executeQuery(
