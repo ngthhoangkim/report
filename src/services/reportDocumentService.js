@@ -1336,9 +1336,10 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
   }
 
   const imageLimit = templateSelector.getImageLimit(templatePath);
-  if (imageFiles.length > imageLimit) {
+  const imageFilesCapped =
+    imageFiles.length > imageLimit ? imageFiles.slice(0, imageLimit) : imageFiles;
+  if (imageFilesCapped.length !== imageFiles.length) {
     logger.warn(`Image count ${imageFiles.length} exceeds limit ${imageLimit}, truncating`);
-    imageFiles = imageFiles.slice(0, imageLimit);
   }
 
   const stagedTemplate = path.join(tempDir, `tpl_${segmentIndex}_${path.basename(templatePath)}`);
@@ -1424,11 +1425,11 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
   // Tokens để docxtemplater render ra vị trí; sau đó ta thay bằng nội dung RTF giữ format.
   const imageTokens = {};
   const tokenToImagePath = {};
-  for (let i = 0; i < imageFiles.length; i += 1) {
+  for (let i = 0; i < imageFilesCapped.length; i += 1) {
     const k = `Image${i + 1}`;
     const token = `__IMG_${i + 1}__`;
     imageTokens[k] = token;
-    tokenToImagePath[token] = imageFiles[i];
+    tokenToImagePath[token] = imageFilesCapped[i];
   }
   const tokens = {
     resultToken: mode === 'rtf_html_plain' ? (resultPlain || '') : (resultRtf ? '__RTF_RESULT__' : ''),
@@ -1560,9 +1561,9 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
     const emb = await embedImagesIntoDocx(renderedDocxPath, tokenToImagePath);
     embeddedCount = emb.embedded || 0;
     embeddedPaths = emb.embeddedPaths || [];
-    if (imageFiles.length > 0 && embeddedCount < imageFiles.length) {
+    if (imageFilesCapped.length > 0 && embeddedCount < imageFilesCapped.length) {
       logger.warn(
-        `Chỉ embed ${embeddedCount}/${imageFiles.length} ảnh (file thiếu, hoặc placeholder không khớp <<ImageN>> / __IMG_n__) — ImagingResultId=${record.imagingResultId}`,
+        `Chỉ embed ${embeddedCount}/${imageFilesCapped.length} ảnh (file thiếu, hoặc placeholder không khớp <<ImageN>> / __IMG_n__) — ImagingResultId=${record.imagingResultId}`,
       );
     }
   } catch (e) {
@@ -1570,7 +1571,7 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
   }
 
   const embeddedSet = new Set(embeddedPaths.map((p) => path.resolve(p)));
-  const remainingImages = imageFiles.filter((p) => !embeddedSet.has(path.resolve(p)));
+  const remainingImages = imageFilesCapped.filter((p) => !embeddedSet.has(path.resolve(p)));
 
   let pdfBaseForAppend = basePdfPath;
   if (embeddedCount > 0) {
@@ -1595,7 +1596,7 @@ async function renderRecordToPdf(record, segmentIndex, tempDir, ctx) {
       logger.warn(
         `Re-convert after embedding failed for ImagingResultId=${record.imagingResultId} (segment=${segmentIndex}). Fallback to appending all image pages. reason=${e?.message || String(e)}`,
       );
-      await mergeBasePdfWithImagePages(basePdfPath, imageFiles, finalPdfPath);
+      await mergeBasePdfWithImagePages(basePdfPath, imageFilesCapped, finalPdfPath);
       return fs.readFileSync(finalPdfPath);
     }
   }
